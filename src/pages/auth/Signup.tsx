@@ -1,18 +1,16 @@
-import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Mail, Lock, User, Eye, EyeOff, Check, Shield, Users, Zap } from 'lucide-react';
 import { AuthLayout } from '../../components/layout/AuthLayout';
 import { Button, Input } from '../../components/ui';
-import { useForm, usePasswordToggle } from '../../hooks';
+import { useForm, usePasswordToggle, useSignup } from '../../hooks';
 import { getPasswordRequirements } from '../../utils';
 import { ROUTES } from '../../constants';
 import type { SignupFormData } from '../../types';
 
 export function Signup() {
-  const navigate = useNavigate();
   const { showPassword, togglePassword, inputType } = usePasswordToggle();
-  const [loading, setLoading] = useState(false);
+  const { mutate: signup, isPending: loading } = useSignup();
   const { values: form, updateValue } = useForm<SignupFormData>({
     name: '',
     email: '',
@@ -25,15 +23,9 @@ export function Signup() {
     form.confirmPassword
   );
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
-
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
-
-    setLoading(false);
-    navigate(ROUTES.ONBOARDING);
+    signup(form);
   };
 
   // Calculate progress for Zeigarnik effect (encourages completion)

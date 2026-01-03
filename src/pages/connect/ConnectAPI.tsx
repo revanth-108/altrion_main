@@ -1,11 +1,45 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Check, X, Loader2, Shield, ArrowRight, Lock, CheckCircle2 } from 'lucide-react';
+import { Check, X, Loader2, Shield, ArrowRight, Lock, Trophy, Star, Sparkles } from 'lucide-react';
 import { Button, Card, Logo, Input, ThemeToggle } from '../../components/ui';
 import { walletPlatforms } from '../../mock/data';
 import { PLATFORM_ICONS, ROUTES } from '../../constants';
 import { useConnectionStatus } from '../../hooks';
 import { useState, useEffect } from 'react';
+
+// Confetti component for celebration moment (peak-end rule)
+const Confetti = () => (
+  <div className="fixed inset-0 pointer-events-none overflow-hidden z-50">
+    {[...Array(50)].map((_, i) => (
+      <motion.div
+        key={i}
+        className="absolute w-2 h-2 rounded-full"
+        style={{
+          left: `${Math.random() * 100}%`,
+          top: -20,
+          backgroundColor: [
+            '#10b981',
+            '#06b6d4',
+            '#a855f7',
+            '#ec4899',
+            '#f59e0b',
+          ][Math.floor(Math.random() * 5)],
+        }}
+        animate={{
+          y: [0, window.innerHeight + 100],
+          x: [0, (Math.random() - 0.5) * 200],
+          rotate: [0, Math.random() * 720],
+          opacity: [1, 0],
+        }}
+        transition={{
+          duration: 2 + Math.random() * 2,
+          delay: Math.random() * 0.5,
+          ease: 'easeOut',
+        }}
+      />
+    ))}
+  </div>
+);
 
 const allPlatforms = [
   ...walletPlatforms.crypto,
@@ -43,15 +77,32 @@ export function ConnectAPI() {
   const allConnectionsCompleted = connections.length > 0 &&
     connections.every(c => c.status === 'success' || c.status === 'error');
 
-  // Auto-navigate to dashboard when all connections are completed
+  // Show confetti only if at least one account was connected successfully
+  const showCelebration = allConnectionsCompleted && successCount > 0;
+
+  // Save connected accounts to localStorage when connections complete
   useEffect(() => {
     if (allConnectionsCompleted) {
+      const successfulIds = connections
+        .filter(c => c.status === 'success')
+        .map(c => c.platformId);
+
+      // Get existing connected accounts and merge with new ones
+      const existingAccounts = JSON.parse(localStorage.getItem('altrion-connected-accounts') || '[]');
+      const allConnectedAccounts = [...new Set([...existingAccounts, ...successfulIds])];
+      localStorage.setItem('altrion-connected-accounts', JSON.stringify(allConnectedAccounts));
+    }
+  }, [allConnectionsCompleted, connections]);
+
+  // Auto-navigate to dashboard when all connections completed but none successful (no confetti case)
+  useEffect(() => {
+    if (allConnectionsCompleted && successCount === 0) {
       const timer = setTimeout(() => {
         navigate(ROUTES.DASHBOARD);
       }, 2000);
       return () => clearTimeout(timer);
     }
-  }, [allConnectionsCompleted, navigate]);
+  }, [allConnectionsCompleted, successCount, navigate]);
 
   return (
     <div className="min-h-screen bg-dark-bg">
@@ -273,7 +324,7 @@ export function ConnectAPI() {
         </div>
 
         {/* Progress Section */}
-        {!allComplete && (
+        {!allConnectionsCompleted && (
           <div className="mt-8 pt-6 border-t border-dark-border">
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-medium text-text-secondary">
@@ -293,31 +344,67 @@ export function ConnectAPI() {
           </div>
         )}
 
-        {/* Complete State */}
+        {/* Complete State with Confetti - only if at least one account connected */}
         <AnimatePresence>
-          {allComplete && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mt-8 text-center py-8"
-            >
+          {showCelebration && (
+            <>
+              <Confetti />
               <motion.div
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={{ type: 'spring', stiffness: 200 }}
-                className="w-16 h-16 bg-gradient-to-br from-altrion-400 to-altrion-600 rounded-full flex items-center justify-center mx-auto mb-4 shadow-xl shadow-altrion-500/30"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-8 text-center py-8"
               >
-                <CheckCircle2 className="w-8 h-8 text-text-primary" />
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1, rotate: 360 }}
+                  transition={{ delay: 0.2, type: 'spring', stiffness: 200 }}
+                  className="w-24 h-24 bg-gradient-to-br from-altrion-400 to-altrion-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-2xl shadow-altrion-500/50"
+                >
+                  <Trophy className="w-12 h-12 text-text-primary" />
+                </motion.div>
+                <motion.h2
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="font-display text-4xl font-bold text-text-primary mb-3 tracking-tight"
+                >
+                  You're all set{localStorage.getItem('altrion-displayName') ? `, ${localStorage.getItem('altrion-displayName')}` : ''}!
+                </motion.h2>
+                <motion.p
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.6 }}
+                  className="text-text-secondary text-lg mb-6"
+                >
+                  Successfully connected {successCount} of {connections.length} accounts
+                </motion.p>
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.8 }}
+                  className="flex items-center justify-center gap-4 mb-8"
+                >
+                  <div className="badge badge-success">
+                    <Star className="w-4 h-4" />
+                    Accounts Connected
+                  </div>
+                  <div className="badge badge-info">
+                    <Sparkles className="w-4 h-4" />
+                    Ready to Go
+                  </div>
+                </motion.div>
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 1 }}
+                >
+                  <Button size="lg" onClick={() => navigate(ROUTES.DASHBOARD)}>
+                    Go to Dashboard
+                    <ArrowRight size={18} />
+                  </Button>
+                </motion.div>
               </motion.div>
-              <h2 className="font-display text-3xl font-bold text-text-primary mb-2">All Set!</h2>
-              <p className="text-text-secondary mb-6">
-                Successfully connected {successCount} of {connections.length} accounts
-              </p>
-              <Button size="lg" onClick={() => navigate(ROUTES.DASHBOARD)}>
-                Go to Dashboard
-                <ArrowRight size={18} />
-              </Button>
-            </motion.div>
+            </>
           )}
         </AnimatePresence>
       </div>

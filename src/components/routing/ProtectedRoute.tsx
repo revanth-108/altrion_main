@@ -49,6 +49,14 @@ export function PublicOnlyRoute({
   const location = useLocation();
 
   if (isAuthenticated) {
+    // Check if user has completed onboarding (has display name set)
+    const hasCompletedOnboarding = localStorage.getItem('altrion-displayName');
+
+    // If user is authenticated but hasn't completed onboarding, send them there
+    if (!hasCompletedOnboarding) {
+      return <Navigate to={ROUTES.ONBOARDING} replace />;
+    }
+
     // Check if there's a return URL in state
     const from = (location.state as { from?: string })?.from || redirectTo;
     return <Navigate to={from} replace />;

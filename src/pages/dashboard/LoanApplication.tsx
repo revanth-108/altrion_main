@@ -591,12 +591,22 @@ export function LoanApplication() {
                                     </div>
 
                                     {/* Right Column - Summary */}
-                                    <div className="flex flex-col justify-center p-4 bg-dark-card rounded-lg">
-                                      <div>
+                                    <div className="flex items-center gap-4 p-4 bg-dark-card rounded-lg">
+                                      <div className="flex-1">
                                         <p className="text-xs text-text-muted mb-1">Collateral Value</p>
                                         <p className="text-2xl font-bold text-altrion-400">
                                           {formatCurrency(collateralValue)}
                                         </p>
+                                      </div>
+                                      <div className="h-12 w-px bg-dark-border" />
+                                      <div className="text-center">
+                                        <p className="text-xs text-text-muted mb-1">Open LTV</p>
+                                        <p className="text-lg font-semibold text-text-primary">70%</p>
+                                      </div>
+                                      <div className="h-12 w-px bg-dark-border" />
+                                      <div className="text-center">
+                                        <p className="text-xs text-text-muted mb-1">Close LTV</p>
+                                        <p className="text-lg font-semibold text-amber-400">83%</p>
                                       </div>
                                     </div>
                                   </div>
@@ -613,6 +623,63 @@ export function LoanApplication() {
               </div>
             </Card>
           </motion.div>
+
+          {/* Total Collateral Summary */}
+          <AnimatePresence>
+            {selectedAssetIds.length > 0 && (
+              <motion.div
+                variants={ITEM_VARIANTS}
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+              >
+                <Card variant="bordered" className="bg-gradient-to-r from-altrion-500/10 to-transparent border-altrion-500/30">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-altrion-500/20 flex items-center justify-center">
+                        <Wallet size={20} className="text-altrion-400" />
+                      </div>
+                      <div>
+                        <h3 className="font-display text-xl font-semibold text-text-primary">Total Collateral</h3>
+                        <p className="text-sm text-text-secondary">
+                          {selectedAssetIds.length} asset{selectedAssetIds.length !== 1 ? 's' : ''} selected
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-6">
+                      {/* Individual asset breakdown */}
+                      <div className="hidden lg:flex items-center gap-4">
+                        {selectedAssets.slice(0, 3).map((asset) => {
+                          const amount = collateralAmounts[asset.id] || 0;
+                          const value = amount * asset.price;
+                          return (
+                            <div key={asset.id} className="text-right">
+                              <p className="text-xs text-text-muted">{asset.symbol}</p>
+                              <p className="text-sm font-semibold text-text-primary">{formatCurrency(value)}</p>
+                            </div>
+                          );
+                        })}
+                        {selectedAssets.length > 3 && (
+                          <div className="text-right">
+                            <p className="text-xs text-text-muted">+{selectedAssets.length - 3} more</p>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="h-10 w-px bg-dark-border hidden lg:block" />
+
+                      {/* Total Value */}
+                      <div className="text-right">
+                        <p className="text-xs text-text-muted">Total Value</p>
+                        <p className="text-2xl font-bold text-altrion-400">{formatCurrency(totalCollateralValue)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Loan Term Selection */}
           <motion.div variants={ITEM_VARIANTS}>

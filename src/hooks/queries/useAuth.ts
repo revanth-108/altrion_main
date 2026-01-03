@@ -66,6 +66,9 @@ export function useLogout() {
     onSuccess: () => {
       storeLogout();
       queryClient.clear();
+      // Clear onboarding data on logout
+      localStorage.removeItem('altrion-displayName');
+      localStorage.removeItem('altrion-connected-accounts');
       navigate(ROUTES.LOGIN);
     },
   });

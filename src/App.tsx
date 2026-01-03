@@ -111,8 +111,8 @@ function AppRoutes() {
         />
 
         {/* Default redirect */}
-        <Route path={ROUTES.HOME} element={<Navigate to={ROUTES.LOGIN} replace />} />
-        <Route path="*" element={<Navigate to={ROUTES.LOGIN} replace />} />
+        <Route path={ROUTES.HOME} element={<Navigate to={ROUTES.SIGNUP} replace />} />
+        <Route path="*" element={<Navigate to={ROUTES.SIGNUP} replace />} />
       </Routes>
     </Suspense>
   );

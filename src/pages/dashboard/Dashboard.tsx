@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { motion } from 'framer-motion';
+import { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import {
   TrendingUp,
@@ -9,18 +9,58 @@ import {
   ArrowUpRight,
   PieChart,
   Shield,
+  ChevronDown,
+  Check,
 } from 'lucide-react';
 import { Button, Card, Header } from '../../components/ui';
-import { mockPortfolio, mockLoanEligibility } from '../../mock/data';
+import { mockPortfolio, mockLoanEligibility, walletPlatforms } from '../../mock/data';
+import { PLATFORM_ICONS } from '../../constants';
 import { formatCurrency, formatPercent, generateChartData, normalizeChartY, normalizeChartX } from '../../utils';
 import type { ChartPeriod } from '../../utils';
 import { CONTAINER_VARIANTS, ITEM_VARIANTS, ROUTES } from '../../constants';
+
+// Get all platforms for lookup
+const allPlatforms = [
+  ...walletPlatforms.crypto,
+  ...walletPlatforms.banks,
+  ...walletPlatforms.brokers,
+];
 
 export function Dashboard() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'all' | 'crypto' | 'stocks' | 'cash'>('all');
   const [chartPeriod, setChartPeriod] = useState<ChartPeriod>('24H');
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [showAccountsDropdown, setShowAccountsDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Get connected accounts from localStorage (set during onboarding)
+  const [connectedAccountIds, setConnectedAccountIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    // In a real app, this would come from an API or global state
+    // For now, we'll check localStorage for demo purposes
+    const stored = localStorage.getItem('altrion-connected-accounts');
+    if (stored) {
+      setConnectedAccountIds(JSON.parse(stored));
+    }
+  }, []);
+
+  // Get platform details for connected accounts
+  const connectedAccounts = connectedAccountIds
+    .map(id => allPlatforms.find(p => p.id === id))
+    .filter(Boolean);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowAccountsDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Get selected asset
   const selectedAsset = selectedAssetId
@@ -85,10 +125,87 @@ export function Dashboard() {
               <h1 className="font-display text-3xl font-bold text-text-primary">Dashboard</h1>
               <p className="text-text-secondary text-sm mt-0.5">Welcome back! Here's your portfolio overview.</p>
             </div>
-            <Button onClick={() => navigate(ROUTES.CONNECT_SELECT)}>
-              <Plus size={18} />
-              Add Account
-            </Button>
+
+            {/* Accounts Dropdown */}
+            <div className="relative" ref={dropdownRef}>
+              <Button
+                onClick={() => setShowAccountsDropdown(!showAccountsDropdown)}
+                variant={showAccountsDropdown ? 'primary' : 'primary'}
+              >
+                <Wallet size={18} />
+                Accounts
+                <ChevronDown
+                  size={16}
+                  className={`transition-transform ${showAccountsDropdown ? 'rotate-180' : ''}`}
+                />
+              </Button>
+
+              <AnimatePresence>
+                {showAccountsDropdown && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute right-0 top-full mt-2 w-72 bg-dark-card border border-dark-border rounded-xl shadow-xl z-50 overflow-hidden"
+                  >
+                    {/* Connected Accounts */}
+                    {connectedAccounts.length > 0 && (
+                      <div className="p-2 border-b border-dark-border">
+                        <p className="text-xs text-text-muted px-2 py-1 uppercase tracking-wider">Connected Accounts</p>
+                        {connectedAccounts.map((platform) => {
+                          if (!platform) return null;
+                          const config = PLATFORM_ICONS[platform.id];
+                          const Icon = config?.icon;
+                          const logo = config?.logo;
+                          const color = config?.color || 'bg-gray-500/20';
+
+                          return (
+                            <div
+                              key={platform.id}
+                              className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-dark-elevated transition-colors"
+                            >
+                              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${color}`}>
+                                {logo ? (
+                                  <img src={logo} alt={platform.name} className="w-5 h-5 object-contain" />
+                                ) : Icon ? (
+                                  <Icon size={16} />
+                                ) : null}
+                              </div>
+                              <span className="text-sm text-text-primary flex-1">{platform.name}</span>
+                              <Check size={14} className="text-green-500" />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* No accounts message */}
+                    {connectedAccounts.length === 0 && (
+                      <div className="p-4 text-center border-b border-dark-border">
+                        <p className="text-sm text-text-muted">No accounts connected yet</p>
+                      </div>
+                    )}
+
+                    {/* Add Account Option */}
+                    <div className="p-2">
+                      <button
+                        onClick={() => {
+                          setShowAccountsDropdown(false);
+                          navigate(ROUTES.CONNECT_SELECT);
+                        }}
+                        className="w-full flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-dark-elevated transition-colors text-altrion-400"
+                      >
+                        <div className="w-8 h-8 rounded-lg bg-altrion-500/20 flex items-center justify-center">
+                          <Plus size={16} />
+                        </div>
+                        <span className="text-sm font-medium">Add Account</span>
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </motion.div>
 
           {/* Portfolio Value Card - Enhanced visual hierarchy */}
@@ -147,7 +264,7 @@ export function Dashboard() {
                     </p>
                   </div>
                   <div className="text-center px-6 py-4 bg-dark-elevated/80 backdrop-blur rounded-xl border border-dark-border hover:border-altrion-500/30 transition-all">
-                    <p className="text-text-muted text-xs mb-1 uppercase tracking-wider">Stable</p>
+                    <p className="text-text-muted text-xs mb-1 uppercase tracking-wider">Cash</p>
                     <p className="text-text-primary font-bold text-lg">
                       {formatCurrency(
                         mockPortfolio.assets
