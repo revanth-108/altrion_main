@@ -16,11 +16,11 @@ import {
   Landmark,
 } from 'lucide-react';
 import { Button, Card, Header, Checkbox, Tooltip } from '../../components/ui';
-import { mockPortfolio } from '../../mock/data';
 import { formatCurrency, formatPercent, generateChartData, normalizeChartY, normalizeChartX } from '../../utils';
 import type { ChartPeriod } from '../../utils';
 import { CONTAINER_VARIANTS, ITEM_VARIANTS, ROUTES } from '../../constants';
 import type { PayoutCurrency, BankOption } from '@/types';
+import { usePortfolio } from '../../hooks/queries/usePortfolio';
 
 // Type for collateral amounts
 type CollateralAmounts = Record<string, number>;
@@ -43,6 +43,8 @@ export function LoanApplication() {
   const [payoutCurrency, setPayoutCurrency] = useState<PayoutCurrency>('USD');
   const [selectedBank, setSelectedBank] = useState<BankOption>('chase');
   const [hoveredPoint, setHoveredPoint] = useState<{ index: number; x: number; y: number } | null>(null);
+  const { data: portfolio } = usePortfolio();
+  const portfolioData = portfolio || { totalValue: 0, change24h: 0, assets: [] };
 
   // Aggregate assets by symbol (combine same assets from different platforms)
   const aggregatedAssets = useMemo(() => {
@@ -58,15 +60,19 @@ export function LoanApplication() {
       type: 'crypto' | 'stock' | 'stablecoin';
     }>();
 
-    mockPortfolio.assets.forEach(asset => {
+    portfolioData.assets.forEach(asset => {
       const existing = assetMap.get(asset.symbol);
       if (existing) {
         existing.amount += asset.amount;
         existing.value += asset.value;
-        if (!existing.platforms.includes(asset.platform)) {
-          existing.platforms.push(asset.platform);
-        }
+        const platforms = asset.platform.split(', ').filter(Boolean);
+        platforms.forEach(platform => {
+          if (!existing.platforms.includes(platform)) {
+            existing.platforms.push(platform);
+          }
+        });
       } else {
+        const platforms = asset.platform.split(', ').filter(Boolean);
         assetMap.set(asset.symbol, {
           id: asset.id,
           symbol: asset.symbol,
@@ -75,14 +81,14 @@ export function LoanApplication() {
           value: asset.value,
           price: asset.price,
           change24h: asset.change24h,
-          platforms: [asset.platform],
+          platforms: platforms.length > 0 ? platforms : [asset.platform],
           type: asset.type,
         });
       }
     });
 
     return Array.from(assetMap.values());
-  }, []);
+  }, [portfolioData.assets]);
 
   const filteredAssets = aggregatedAssets.filter(asset => {
     if (activeTab === 'all') return true;
@@ -192,8 +198,8 @@ export function LoanApplication() {
 
   // Chart data - memoized to prevent regeneration on mouse move
   const chartData = useMemo(
-    () => generateChartData(mockPortfolio.totalValue, chartPeriod),
-    [chartPeriod]
+    () => generateChartData(portfolioData.totalValue, chartPeriod),
+    [portfolioData.totalValue, chartPeriod]
   );
   const maxValue = useMemo(() => Math.max(...chartData.map(d => d.value)), [chartData]);
   const minValue = useMemo(() => Math.min(...chartData.map(d => d.value)), [chartData]);
@@ -288,7 +294,7 @@ export function LoanApplication() {
                     {selectedAssetIds.length > 0 ? 'Total Collateral' : 'Max Portfolio Value'}
                   </span>
                   <span className="text-xl font-bold text-text-primary">
-                    {formatCurrency(selectedAssetIds.length > 0 ? totalCollateralValue : mockPortfolio.totalValue)}
+                    {formatCurrency(selectedAssetIds.length > 0 ? totalCollateralValue : portfolioData.totalValue)}
                   </span>
                 </div>
               </div>

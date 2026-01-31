@@ -1,20 +1,85 @@
 import type { Portfolio, Asset, LoanEligibility } from '@/types';
 import { mockPortfolio, mockLoanEligibility } from '@/mock/data';
+import { api } from './api';
 
-// Simulated delay for demo purposes
-const simulateDelay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const useMockPortfolio = import.meta.env.VITE_USE_MOCK_PORTFOLIO === 'true';
+
+// Backend response types
+interface BackendAsset {
+  symbol: string;
+  name: string;
+  quantity: string;
+  value_usd: string;
+  price_usd: string;
+  change_24h: number | null;
+  asset_class: string;
+  sources: Array<{
+    source: string;
+    account_id: string;
+    account_name: string | null;
+    quantity: string;
+    value_usd: string;
+  }>;
+}
+
+interface BackendPortfolioResponse {
+  schema_version: string;
+  total_value: string;
+  change_24h: number | null;
+  assets: BackendAsset[];
+  categories: {
+    crypto: string;
+    equity: string;
+    cash_equivalent: string;
+  };
+  warnings: Array<{
+    type: string;
+    message: string;
+    account_id?: string;
+    provider?: string;
+  }>;
+}
+
+// Transform backend response to frontend format
+const transformPortfolio = (backendData: BackendPortfolioResponse): Portfolio => {
+  const assets: Asset[] = backendData.assets.map((asset, index) => ({
+    id: `asset-${asset.symbol}-${index}`,
+    symbol: asset.symbol,
+    name: asset.name,
+    amount: parseFloat(asset.quantity),
+    value: parseFloat(asset.value_usd),
+    price: parseFloat(asset.price_usd),
+    change24h: asset.change_24h || 0,
+    platform: asset.sources.map(s => s.source).join(', '),
+    type: asset.asset_class === 'crypto' ? 'crypto' : asset.asset_class === 'equity' ? 'stock' : 'stablecoin',
+  }));
+
+  const parsedTotal = parseFloat(backendData.total_value);
+  const computedTotal = assets.reduce((sum, asset) => sum + asset.value, 0);
+  const totalValue = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : computedTotal;
+
+  return {
+    totalValue,
+    change24h: backendData.change_24h || 0,
+    assets,
+  };
+};
 
 export const portfolioService = {
   /**
    * Fetch user's complete portfolio
    */
   async getPortfolio(): Promise<Portfolio> {
-    // TODO: Replace with real API call
-    // const { data } = await api.get<Portfolio>('/portfolio');
-    // return data;
-
-    await simulateDelay(800);
-    return mockPortfolio;
+    try {
+      const { data } = await api.get<BackendPortfolioResponse>('/portfolio');
+      return transformPortfolio(data);
+    } catch (error) {
+      console.error('Failed to fetch portfolio:', error);
+      if (useMockPortfolio) {
+        return mockPortfolio;
+      }
+      throw error;
+    }
   },
 
   /**
@@ -77,13 +142,38 @@ export const portfolioService = {
   /**
    * Refresh portfolio data from connected platforms
    */
-  async refreshPortfolio(): Promise<Portfolio> {
-    // TODO: Replace with real API call
-    // const { data } = await api.post<Portfolio>('/portfolio/refresh');
-    // return data;
-
-    await simulateDelay(2000);
-    return mockPortfolio;
+  async refreshPortfolio(): Promise<{ portfolio: Portfolio; warnings: Array<{ type: string; message: string }> }> {
+    try {
+      const { data: refreshData } = await api.post<{
+        schema_version: string;
+        success: boolean;
+        message: string;
+        refreshed_at: string;
+        warnings: Array<{
+          type: string;
+          message: string;
+          account_id?: string;
+          provider?: string;
+        }>;
+      }>('/portfolio/refresh');
+      
+      // After refresh, fetch updated portfolio
+      const { data } = await api.get<BackendPortfolioResponse>('/portfolio');
+      
+      // Combine warnings from refresh and portfolio response
+      const allWarnings = [
+        ...refreshData.warnings.map(w => ({ type: w.type, message: w.message })),
+        ...data.warnings.map(w => ({ type: w.type, message: w.message })),
+      ];
+      
+      return {
+        portfolio: transformPortfolio(data),
+        warnings: allWarnings,
+      };
+    } catch (error) {
+      console.error('Failed to refresh portfolio:', error);
+      throw error;
+    }
   },
 
   /**

@@ -1,45 +1,70 @@
-import { useState } from 'react';
+import { useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
+import { useForm as useReactHookForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { Mail, Lock, User, Eye, EyeOff, Check, Shield, Users, Zap } from 'lucide-react';
 import { AuthLayout } from '../../components/layout/AuthLayout';
 import { Button, Input } from '../../components/ui';
-import { useForm, usePasswordToggle } from '../../hooks';
+import { usePasswordToggle, useSignup } from '../../hooks';
+import { useToast } from '../../components/ui';
 import { getPasswordRequirements } from '../../utils';
 import { ROUTES } from '../../constants';
-import type { SignupFormData } from '../../types';
+import { signupSchema, type SignupFormData } from '../../schemas';
+import { useAuthStore, selectError } from '../../store';
 
 export function Signup() {
-  const navigate = useNavigate();
   const { showPassword, togglePassword, inputType } = usePasswordToggle();
-  const { mutate: signup, isPending: loading } = useSignup();
-  const { values: form, updateValue } = useForm<SignupFormData>({
-    name: '',
-    email: '',
-    password: '',
-    confirmPassword: '',
+  const { success, error: showError } = useToast();
+  const authError = useAuthStore(selectError);
+  const clearError = useAuthStore((state) => state.clearError);
+
+  const signupMutation = useSignup();
+
+  const {
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors, isSubmitting },
+  } = useReactHookForm<SignupFormData>({
+    resolver: zodResolver(signupSchema),
+    defaultValues: {
+      name: '',
+      email: '',
+      password: '',
+      confirmPassword: '',
+    },
   });
 
-  const passwordRequirements = getPasswordRequirements(
-    form.password,
-    form.confirmPassword
-  );
+  const password = watch('password', '');
+  const confirmPassword = watch('confirmPassword', '');
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
+  const passwordRequirements = getPasswordRequirements(password, confirmPassword);
 
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
+  // Show auth errors as toast
+  useEffect(() => {
+    if (authError) {
+      showError('Signup failed', authError);
+      clearError();
+    }
+  }, [authError, showError, clearError]);
 
-    setLoading(false);
-    navigate(ROUTES.ONBOARDING);
+  const onSubmit = async (data: SignupFormData) => {
+    try {
+      await signupMutation.mutateAsync(data);
+      success('Welcome!', 'Your account has been created successfully.');
+    } catch {
+      // Error is handled by mutation and toast
+    }
   };
 
   // Calculate progress for Zeigarnik effect (encourages completion)
+  const name = watch('name', '');
+  const email = watch('email', '');
+
   const completionProgress = [
-    form.name.length > 0,
-    form.email.length > 0,
+    name.length > 0,
+    email.length > 0,
     passwordRequirements.every(r => r.met),
   ].filter(Boolean).length;
   const totalFields = 3;
@@ -92,7 +117,7 @@ export function Signup() {
         </motion.div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
         {/* Staggered animations for form fields */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -102,10 +127,9 @@ export function Signup() {
           <Input
             label="Full Name"
             type="text"
-            value={form.name}
-            onChange={(e) => updateValue('name', e.target.value)}
+            {...register('name')}
             icon={<User size={18} />}
-            required
+            error={errors.name?.message}
           />
         </motion.div>
 
@@ -117,10 +141,9 @@ export function Signup() {
           <Input
             label="Email"
             type="email"
-            value={form.email}
-            onChange={(e) => updateValue('email', e.target.value)}
+            {...register('email')}
             icon={<Mail size={18} />}
-            required
+            error={errors.email?.message}
           />
         </motion.div>
 
@@ -134,10 +157,9 @@ export function Signup() {
             <Input
               label="Password"
               type={inputType}
-              value={form.password}
-              onChange={(e) => updateValue('password', e.target.value)}
+              {...register('password')}
               icon={<Lock size={18} />}
-              required
+              error={errors.password?.message}
             />
             <button
               type="button"
@@ -158,17 +180,16 @@ export function Signup() {
           <Input
             label="Confirm Password"
             type={inputType}
-            value={form.confirmPassword}
-            onChange={(e) => updateValue('confirmPassword', e.target.value)}
+            {...register('confirmPassword')}
             icon={<Lock size={18} />}
-            required
+            error={errors.confirmPassword?.message}
           />
         </motion.div>
 
         {/* Password requirements */}
         <motion.div
           initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: form.password ? 1 : 0, height: form.password ? 'auto' : 0 }}
+          animate={{ opacity: password ? 1 : 0, height: password ? 'auto' : 0 }}
           className="space-y-1.5 overflow-hidden pb-3"
         >
           {passwordRequirements.map((req, index) => (
@@ -224,8 +245,8 @@ export function Signup() {
             type="submit"
             fullWidth
             size="lg"
-            loading={loading}
-            disabled={!passwordRequirements.every(r => r.met)}
+            loading={isSubmitting || signupMutation.isPending}
+            disabled={!passwordRequirements.every(r => r.met) || isSubmitting || signupMutation.isPending}
           >
             Create Account
           </Button>
@@ -251,7 +272,7 @@ export function Signup() {
         transition={{ delay: 1, duration: 0.6 }}
         className="mt-4 pt-3 border-t border-dark-border/50 text-center text-xs text-text-muted"
       >
-        <p>Protected by 256-bit SSL encryption • GDPR Compliant</p>
+        <p>Your data is encrypted and secured • Trusted by <span className="text-altrion-400 font-bold">10,000+</span> users</p>
       </motion.div>
     </AuthLayout>
   );

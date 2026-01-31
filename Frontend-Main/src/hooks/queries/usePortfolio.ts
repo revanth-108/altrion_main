@@ -55,9 +55,11 @@ export function useRefreshPortfolio() {
 
   return useMutation({
     mutationFn: () => portfolioService.refreshPortfolio(),
-    onSuccess: (portfolio) => {
-      setPortfolio(portfolio);
-      queryClient.setQueryData(portfolioKeys.detail(), portfolio);
+    onSuccess: (result) => {
+      setPortfolio(result.portfolio);
+      queryClient.setQueryData(portfolioKeys.detail(), result.portfolio);
+      // Return warnings so component can access them
+      return result.warnings;
     },
   });
 }

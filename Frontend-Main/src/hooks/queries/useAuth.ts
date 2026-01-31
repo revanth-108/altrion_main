@@ -35,7 +35,7 @@ export function useLogin() {
 
 export function useSignup() {
   const navigate = useNavigate();
-  const { login: storeLogin, setLoading, setError } = useAuthStore();
+  const { login: storeLogin, setLoading, setError, setJustSignedUp } = useAuthStore();
 
   return useMutation({
     mutationFn: (data: SignupFormData) => authService.signup(data),
@@ -45,6 +45,7 @@ export function useSignup() {
     },
     onSuccess: (data) => {
       storeLogin(data.user, data.tokens.accessToken);
+      setJustSignedUp(true);
       // Use replace to prevent PublicOnlyRoute from interfering
       // Navigate with state to indicate this is a fresh signup
       navigate(ROUTES.ONBOARDING, { replace: true });

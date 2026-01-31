@@ -5,6 +5,7 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import { QueryProvider, ErrorBoundary } from './components/providers';
 import { ProtectedRoute, PublicOnlyRoute, PageSkeleton } from './components/routing';
 import { ToastProvider, Footer } from './components/ui';
+import { useAuthStore, selectIsAuthenticated } from './store';
 
 // Lazy load pages for code splitting
 const Login = lazy(() => import('./pages/auth/Login').then(m => ({ default: m.Login })));
@@ -17,6 +18,11 @@ const LoanApplication = lazy(() => import('./pages/dashboard/LoanApplication').t
 const LoanReview = lazy(() => import('./pages/dashboard/LoanReview').then(m => ({ default: m.LoanReview })));
 const LoanSummary = lazy(() => import('./pages/dashboard/LoanSummary').then(m => ({ default: m.LoanSummary })));
 const LoanConfirmation = lazy(() => import('./pages/dashboard/LoanConfirmation').then(m => ({ default: m.LoanConfirmation })));
+
+function RootRedirect() {
+  const isAuthenticated = useAuthStore(selectIsAuthenticated);
+  return <Navigate to={isAuthenticated ? ROUTES.DASHBOARD : ROUTES.LOGIN} replace />;
+}
 
 function AppRoutes() {
   return (
@@ -111,8 +117,8 @@ function AppRoutes() {
         />
 
         {/* Default redirect */}
-        <Route path={ROUTES.HOME} element={<Navigate to={ROUTES.SIGNUP} replace />} />
-        <Route path="*" element={<Navigate to={ROUTES.SIGNUP} replace />} />
+        <Route path={ROUTES.HOME} element={<RootRedirect />} />
+        <Route path="*" element={<RootRedirect />} />
       </Routes>
     </Suspense>
   );

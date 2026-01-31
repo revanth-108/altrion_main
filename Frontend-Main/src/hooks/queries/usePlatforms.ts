@@ -27,7 +27,7 @@ export function useConnectedPlatforms() {
 export function useConnectPlatform() {
   const queryClient = useQueryClient();
 
-  return useMutation<ConnectionResult, Error, { platformId: string; credentials: PlatformCredentials }>({
+  return useMutation<ConnectionResult, Error, { platformId: string; credentials: PlatformCredentials | Record<string, string> }>({
     mutationFn: ({ platformId, credentials }) =>
       platformService.connectWithCredentials(platformId, credentials),
     onSuccess: () => {

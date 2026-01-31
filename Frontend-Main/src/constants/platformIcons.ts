@@ -14,12 +14,14 @@ export const PLATFORM_ICONS: Record<string, PlatformIcon> = {
   phantom: { logo: '/phantom.jpg', color: 'bg-purple-500/20' },
   ledger: { logo: '/ledger.png', color: 'bg-slate-500/20' },
   trustwallet: { logo: '/trustwallet.webp', color: 'bg-cyan-500/20' },
+  wallet: { logo: '/wallet.svg', color: 'bg-emerald-500/20' },
 
   // Banks
   chase: { icon: DollarSign, color: 'bg-blue-600/20 text-blue-500' },
   bofa: { icon: Building2, color: 'bg-red-600/20 text-red-500' },
   wells: { icon: Truck, color: 'bg-yellow-600/20 text-yellow-500' },
   citi: { icon: Landmark, color: 'bg-blue-500/20 text-blue-400' },
+  plaid: { logo: '/plaid.svg', color: 'bg-indigo-500/20' },
 
   // Brokerages
   robinhood: { logo: '/robinhood.svg', color: 'bg-green-500/20' },

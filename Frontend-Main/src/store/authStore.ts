@@ -10,6 +10,7 @@ interface AuthState {
   isLoading: boolean;
   error: string | null;
   hasCompletedOnboarding: boolean;
+  justSignedUp: boolean;
 }
 
 interface AuthActions {
@@ -21,6 +22,7 @@ interface AuthActions {
   logout: () => void;
   clearError: () => void;
   completeOnboarding: () => void;
+  setJustSignedUp: (value: boolean) => void;
 }
 
 type AuthStore = AuthState & AuthActions;
@@ -32,6 +34,7 @@ const initialState: AuthState = {
   isLoading: false,
   error: null,
   hasCompletedOnboarding: false,
+  justSignedUp: false,
 };
 
 export const useAuthStore = create<AuthStore>()(
@@ -75,6 +78,7 @@ export const useAuthStore = create<AuthStore>()(
           state.isAuthenticated = false;
           state.error = null;
           state.hasCompletedOnboarding = false;
+          state.justSignedUp = false;
         }),
 
       clearError: () =>
@@ -85,6 +89,11 @@ export const useAuthStore = create<AuthStore>()(
       completeOnboarding: () =>
         set((state) => {
           state.hasCompletedOnboarding = true;
+        }),
+
+      setJustSignedUp: (value) =>
+        set((state) => {
+          state.justSignedUp = value;
         }),
     })),
     {

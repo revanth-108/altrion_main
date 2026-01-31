@@ -8,9 +8,26 @@ export const signup = async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
+    // Log incoming request for debugging
+    console.log('Signup request received:', { name, email, password: password ? '***' : 'missing' });
+
+    // Validate required fields
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name, email, and password are required',
+        errors: [
+          !name && { field: 'name', message: 'Name is required' },
+          !email && { field: 'email', message: 'Email is required' },
+          !password && { field: 'password', message: 'Password is required' }
+        ].filter(Boolean)
+      });
+    }
+
     // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
+      console.log('Signup failed: User already exists', email);
       return res.status(400).json({
         success: false,
         message: 'User with this email already exists'
@@ -18,12 +35,14 @@ export const signup = async (req, res) => {
     }
 
     // Create new user
+    console.log('Creating new user...');
     const user = await User.create({
       name,
       email,
       password,
       provider: 'local'
     });
+    console.log('User created successfully:', user._id);
 
     // Generate tokens
     const accessToken = generateAccessToken(user._id);
@@ -32,6 +51,8 @@ export const signup = async (req, res) => {
     // Save refresh token to user
     user.refreshTokens.push({ token: refreshToken });
     await user.save();
+
+    console.log('Signup successful for:', email);
 
     res.status(201).json({
       success: true,
@@ -51,10 +72,32 @@ export const signup = async (req, res) => {
     });
   } catch (error) {
     console.error('Signup error:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Handle MongoDB duplicate key error
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'User with this email already exists'
+      });
+    }
+
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error',
+        errors: Object.values(error.errors).map(err => ({
+          field: err.path,
+          message: err.message
+        }))
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Error registering user',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 };
@@ -66,10 +109,22 @@ export const signin = async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    // Log incoming request for debugging
+    console.log('Signin request received:', { email, password: password ? '***' : 'missing' });
+
+    // Validate required fields
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+
     // Check if user exists and get password field
     const user = await User.findOne({ email }).select('+password');
 
     if (!user) {
+      console.log('Signin failed: User not found', email);
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password'
@@ -78,6 +133,7 @@ export const signin = async (req, res) => {
 
     // Check if user registered with OAuth
     if (user.provider !== 'local') {
+      console.log('Signin failed: User registered with OAuth', email, user.provider);
       return res.status(400).json({
         success: false,
         message: `This email is registered with ${user.provider}. Please use ${user.provider} to sign in.`
@@ -88,6 +144,7 @@ export const signin = async (req, res) => {
     const isPasswordMatch = await user.comparePassword(password);
 
     if (!isPasswordMatch) {
+      console.log('Signin failed: Invalid password', email);
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password'
@@ -101,6 +158,8 @@ export const signin = async (req, res) => {
     // Save refresh token
     user.refreshTokens.push({ token: refreshToken });
     await user.save();
+
+    console.log('Signin successful for:', email);
 
     res.status(200).json({
       success: true,
@@ -120,10 +179,11 @@ export const signin = async (req, res) => {
     });
   } catch (error) {
     console.error('Signin error:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Error logging in',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 };

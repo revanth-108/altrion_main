@@ -2,10 +2,14 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Check, X, Loader2, Shield, ArrowRight, Lock, Trophy, Star, Sparkles } from 'lucide-react';
 import { Button, Card, Logo, Input, ThemeToggle } from '../../components/ui';
-import { walletPlatforms } from '../../mock/data';
 import { PLATFORM_ICONS, ROUTES } from '../../constants';
 import { useConnectionStatus } from '../../hooks';
 import { useState, useEffect } from 'react';
+import { platformService } from '../../services';
+import { usePlatforms } from '../../hooks/queries/usePlatforms';
+import EthereumProvider from '@walletconnect/ethereum-provider';
+import { useQueryClient } from '@tanstack/react-query';
+import { usePlaidLink } from 'react-plaid-link';
 
 // Confetti component for celebration moment (peak-end rule)
 const Confetti = () => (
@@ -41,12 +45,6 @@ const Confetti = () => (
   </div>
 );
 
-const allPlatforms = [
-  ...walletPlatforms.crypto,
-  ...walletPlatforms.banks,
-  ...walletPlatforms.brokers,
-];
-
 export function ConnectAPI() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -55,23 +53,163 @@ export function ConnectAPI() {
     selectedPlatformIds[0] || null
   );
   const [credentials, setCredentials] = useState({ username: '', password: '' });
+  const [walletConnecting, setWalletConnecting] = useState(false);
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const [walletUri, setWalletUri] = useState<string | null>(null);
+  const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
+  const [plaidToken, setPlaidToken] = useState<string | null>(null);
+  const [plaidError, setPlaidError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const { data: platformGroups } = usePlatforms();
+  const platforms = platformGroups || { crypto: [], banks: [], brokers: [] };
+  const allPlatforms = [...platforms.crypto, ...platforms.banks, ...platforms.brokers];
 
-  const { connections, allComplete, successCount, retryConnection } = useConnectionStatus({
+  const connectPlatform = async (
+    platformId: string,
+    platformCredentials?: Record<string, string>
+  ) => {
+    const result = await platformService.connectWithCredentials(
+      platformId,
+      platformCredentials || {}
+    );
+    if (result.status === 'success') {
+      await queryClient.invalidateQueries({ queryKey: ['platforms', 'connected'] });
+    }
+    return result.status === 'success' ? 'success' : 'error';
+  };
+
+  const { connections, successCount, retryConnection } = useConnectionStatus({
     platformIds: selectedPlatformIds,
     autoStart: false,
+    connectPlatform,
   });
 
-  const handleConnectAccount = () => {
-    // Only connect if credentials are provided
-    if (credentials.username && credentials.password && selectedPlatformId) {
-      const connectionIndex = connections.findIndex(c => c.platformId === selectedPlatformId);
-      if (connectionIndex !== -1) {
-        retryConnection(connectionIndex);
+  const buildCredentials = () => {
+    if (!selectedPlatformId) return null;
+    if (!credentials.username) return null;
+
+    if (selectedPlatformId === 'wallet') {
+      return {
+        address: credentials.username,
+        chain: credentials.password || 'ethereum',
+      };
+    }
+
+    if (!credentials.password) return null;
+
+    return {
+      username: credentials.username,
+      password: credentials.password,
+    };
+  };
+
+  const connectWallet = async () => {
+    const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
+    if (!projectId) {
+      setWalletError('WalletConnect project ID is not configured.');
+      return;
+    }
+
+    setWalletConnecting(true);
+    setWalletError(null);
+    setWalletUri(null);
+    setConnectedAddress(null);
+
+    try {
+      const provider = await EthereumProvider.init({
+        projectId,
+        chains: [1],
+        optionalChains: [1],
+        showQrModal: true,
+        methods: ['eth_requestAccounts', 'eth_chainId'],
+        events: ['accountsChanged', 'chainChanged'],
+        metadata: {
+          name: 'Altrion',
+          description: 'Altrion wallet connection',
+          url: window.location.origin,
+          icons: [],
+        },
+      });
+
+      provider.on('display_uri', (uri: string) => {
+        setWalletUri(uri);
+      });
+
+      await provider.connect();
+
+      const accounts = await provider.request<string[]>({ method: 'eth_requestAccounts' });
+      const chainIdHex = await provider.request<string>({ method: 'eth_chainId' });
+
+      const address = accounts?.[0];
+      const chain = chainIdHex ? parseInt(chainIdHex, 16).toString() : '1';
+
+      if (!address) {
+        setWalletError('No wallet address returned from WalletConnect.');
+        return;
       }
+
+      setConnectedAddress(address);
+
+      const connectionIndex = connections.findIndex(c => c.platformId === selectedPlatformId);
+      if (connectionIndex === -1) {
+        setWalletError('Wallet connection target not found.');
+        return;
+      }
+
+      retryConnection(connectionIndex, { address, chain });
+    } catch (error) {
+      console.error('WalletConnect failed', error);
+      setWalletError('Wallet connection failed. Please try again.');
+    } finally {
+      setWalletConnecting(false);
     }
   };
 
   const selectedPlatform = allPlatforms.find(p => p.id === selectedPlatformId);
+  const isWallet = selectedPlatformId === 'wallet';
+  const isPlaid = selectedPlatformId === 'plaid';
+
+  useEffect(() => {
+    const fetchPlaidToken = async () => {
+      if (!isPlaid) return;
+      try {
+        setPlaidError(null);
+        const token = await platformService.getPlaidLinkToken();
+        setPlaidToken(token);
+      } catch (error) {
+        console.error('Failed to get Plaid link token', error);
+        setPlaidError('Failed to initialize Plaid. Please try again.');
+      }
+    };
+    fetchPlaidToken();
+  }, [isPlaid]);
+
+  const { open: openPlaid, ready: plaidReady } = usePlaidLink({
+    token: plaidToken || '',
+    onSuccess: async (public_token) => {
+      try {
+        const result = await platformService.connectWithCredentials('plaid', { public_token });
+        if (result.status !== 'success') {
+          setPlaidError(result.message || 'Plaid connection failed.');
+        }
+      } catch (error) {
+        console.error('Plaid connect failed', error);
+        setPlaidError('Plaid connection failed.');
+      }
+    },
+    onExit: () => {},
+  });
+
+  const handleConnectAccount = () => {
+    // Only connect if credentials are provided
+    const platformCredentials = buildCredentials();
+    if (platformCredentials && selectedPlatformId) {
+      const connectionIndex = connections.findIndex(c => c.platformId === selectedPlatformId);
+      if (connectionIndex !== -1) {
+        retryConnection(connectionIndex, platformCredentials);
+      }
+    }
+  };
 
   // Check if all connections are either success or error (completed)
   const allConnectionsCompleted = connections.length > 0 &&
@@ -100,6 +238,16 @@ export function ConnectAPI() {
       const timer = setTimeout(() => {
         navigate(ROUTES.DASHBOARD);
       }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [allConnectionsCompleted, successCount, navigate]);
+
+  // Auto-navigate to dashboard after successful connections
+  useEffect(() => {
+    if (allConnectionsCompleted && successCount > 0) {
+      const timer = setTimeout(() => {
+        navigate(ROUTES.DASHBOARD);
+      }, 3000);
       return () => clearTimeout(timer);
     }
   }, [allConnectionsCompleted, successCount, navigate]);
@@ -144,11 +292,10 @@ export function ConnectAPI() {
                       initial={{ opacity: 0, x: -20 }}
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: index * 0.1 }}
-                      className={`w-full p-3 rounded-lg border-2 transition-all flex items-center gap-3 text-left ${
-                        isSelected
+                      className={`w-full p-3 rounded-lg border-2 transition-all flex items-center gap-3 text-left ${isSelected
                           ? 'border-altrion-500 bg-altrion-500/10'
                           : 'border-dark-border bg-dark-card hover:border-dark-border/80'
-                      }`}
+                        }`}
                     >
                       <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${color}`}>
                         {logo ? (
@@ -217,7 +364,9 @@ export function ConnectAPI() {
                       })()}
                       <div>
                         <h3 className="font-display text-2xl font-bold text-text-primary">{selectedPlatform.name}</h3>
-                        <p className="text-text-secondary text-sm">Enter your credentials</p>
+                        <p className="text-text-secondary text-sm">
+                          {isWallet ? 'Connect using WalletConnect' : isPlaid ? 'Connect your bank via Plaid' : 'Enter your credentials'}
+                        </p>
                       </div>
                     </div>
 
@@ -232,26 +381,32 @@ export function ConnectAPI() {
                     </div>
 
                     {/* Login Form */}
-                    <div className="space-y-4 mb-6">
-                      <div>
-                        <label className="block text-sm font-medium text-text-primary mb-2">Email or Username</label>
-                        <Input
-                          type="text"
-                          placeholder="your@email.com or username"
-                          value={credentials.username}
-                          onChange={(e) => setCredentials({ ...credentials, username: e.target.value })}
-                        />
+                    {!isWallet && !isPlaid && (
+                      <div className="space-y-4 mb-6">
+                        <div>
+                          <label className="block text-sm font-medium text-text-primary mb-2">
+                            Email or Username
+                          </label>
+                          <Input
+                            type="text"
+                            placeholder="your@email.com or username"
+                            value={credentials.username}
+                            onChange={(e) => setCredentials({ ...credentials, username: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-text-primary mb-2">
+                            Password
+                          </label>
+                          <Input
+                            type="password"
+                            placeholder="••••••••"
+                            value={credentials.password}
+                            onChange={(e) => setCredentials({ ...credentials, password: e.target.value })}
+                          />
+                        </div>
                       </div>
-                      <div>
-                        <label className="block text-sm font-medium text-text-primary mb-2">Password</label>
-                        <Input
-                          type="password"
-                          placeholder="••••••••"
-                          value={credentials.password}
-                          onChange={(e) => setCredentials({ ...credentials, password: e.target.value })}
-                        />
-                      </div>
-                    </div>
+                    )}
 
                     {/* Connection Status */}
                     {(() => {
@@ -275,38 +430,81 @@ export function ConnectAPI() {
                     })()}
 
                     {/* Action Buttons */}
-                    <div className="flex gap-3">
-                      <div className="flex-1">
-                        <Button
-                          size="lg"
-                          onClick={handleConnectAccount}
-                          disabled={!credentials.username || !credentials.password}
-                        >
-                          {(() => {
-                            const conn = connections.find(c => c.platformId === selectedPlatform.id);
-                            if (conn?.status === 'connecting') {
-                              return (
+                    <div className="flex flex-col gap-3">
+                      <div className="flex gap-3">
+                        <div className="flex-1">
+                          <Button
+                            size="lg"
+                            onClick={isWallet ? connectWallet : isPlaid ? openPlaid : handleConnectAccount}
+                            disabled={isWallet ? walletConnecting : isPlaid ? !plaidReady : (!credentials.username || !credentials.password)}
+                          >
+                            {isWallet ? (
+                              walletConnecting ? (
                                 <>
                                   <Loader2 size={18} className="animate-spin" />
                                   Connecting...
                                 </>
-                              );
-                            }
-                            return 'Connect Account';
-                          })()}
-                        </Button>
-                      </div>
-                      {(() => {
-                        const conn = connections.find(c => c.platformId === selectedPlatform.id);
-                        return conn?.status === 'error' ? (
-                          <Button
-                            variant="secondary"
-                            onClick={() => retryConnection(connections.findIndex(c => c.platformId === selectedPlatform.id))}
-                          >
-                            Retry
+                              ) : (
+                                'Connect Wallet'
+                              )
+                            ) : isPlaid ? (
+                              'Connect Bank'
+                            ) : (
+                              (() => {
+                                const conn = connections.find(c => c.platformId === selectedPlatform.id);
+                                if (conn?.status === 'connecting') {
+                                  return (
+                                    <>
+                                      <Loader2 size={18} className="animate-spin" />
+                                      Connecting...
+                                    </>
+                                  );
+                                }
+                                return 'Connect Account';
+                              })()
+                            )}
                           </Button>
-                        ) : null;
-                      })()}
+                        </div>
+                        {!isWallet && !isPlaid && (() => {
+                          const conn = connections.find(c => c.platformId === selectedPlatform.id);
+                          return conn?.status === 'error' ? (
+                            <Button
+                              variant="secondary"
+                              onClick={() => retryConnection(connections.findIndex(c => c.platformId === selectedPlatform.id))}
+                            >
+                              Retry
+                            </Button>
+                          ) : null;
+                        })()}
+                      </div>
+                      {walletError && (
+                        <p className="text-sm text-red-400">{walletError}</p>
+                      )}
+                      {plaidError && (
+                        <p className="text-sm text-red-400">{plaidError}</p>
+                      )}
+                      {connectedAddress && (
+                        <div className="text-xs text-text-muted">
+                          Connected wallet: <span className="text-text-primary">{connectedAddress}</span>
+                        </div>
+                      )}
+                      {walletUri && (
+                        <div className="text-xs text-text-muted">
+                          If your wallet scanner says “no usable data”, open your wallet app’s
+                          WalletConnect scanner and scan the QR (do not use the phone camera).
+                          <div className="mt-2">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                window.location.href = walletUri;
+                              }}
+                            >
+                              Open in Wallet
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </Card>
                 </motion.div>

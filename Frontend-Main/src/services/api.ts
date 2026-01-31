@@ -57,7 +57,7 @@ const requestInterceptor = (config: RequestConfig): RequestConfig => {
   const headers = new Headers(config.headers);
 
   headers.set('Content-Type', 'application/json');
-  
+
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
@@ -104,6 +104,18 @@ const fetchWithTimeout = async (
       signal: controller.signal,
     });
     return response;
+  } catch (error) {
+    // Handle abort/timeout
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new NetworkError('Request timeout - server took too long to respond');
+    }
+    // Handle CORS errors
+    if (error instanceof TypeError) {
+      throw new NetworkError(
+        'Network error - Unable to connect to server. This might be a CORS issue or the server is unreachable.'
+      );
+    }
+    throw error;
   } finally {
     clearTimeout(timeoutId);
   }

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { Wallet, Building, TrendingUp, ArrowRight, Check, Search } from 'lucide-react';
 import { Button, Card, Logo, Input, ThemeToggle } from '../../components/ui';
-import { walletPlatforms } from '../../mock/data';
+import { usePlatforms } from '../../hooks/queries/usePlatforms';
 import { PLATFORM_ICONS, ROUTES } from '../../constants';
 
 type CategoryType = 'crypto' | 'banks' | 'brokers';
@@ -19,6 +19,9 @@ export function SelectWallets() {
   const [activeCategory, setActiveCategory] = useState<CategoryType>('crypto');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
+  const { data: platformGroups } = usePlatforms();
+  const platforms = platformGroups || { crypto: [], banks: [], brokers: [] };
+  const allPlatforms = [...platforms.crypto, ...platforms.banks, ...platforms.brokers];
 
   const togglePlatform = (platformId: string) => {
     setSelectedPlatforms(prev =>
@@ -28,7 +31,7 @@ export function SelectWallets() {
     );
   };
 
-  const currentPlatforms = walletPlatforms[activeCategory].filter(p =>
+  const currentPlatforms = platforms[activeCategory].filter(p =>
     p.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
@@ -180,8 +183,7 @@ export function SelectWallets() {
                   </div>
                   <div className="flex -space-x-2">
                     {selectedPlatforms.slice(0, 5).map((id) => {
-                      const platform = [...walletPlatforms.crypto, ...walletPlatforms.banks, ...walletPlatforms.brokers]
-                        .find(p => p.id === id);
+                      const platform = allPlatforms.find(p => p.id === id);
                       const platformConfig = PLATFORM_ICONS[id];
                       const Icon = platformConfig?.icon;
                       const logo = platformConfig?.logo;

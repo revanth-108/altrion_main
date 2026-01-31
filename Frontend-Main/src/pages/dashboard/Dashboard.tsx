@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { motion } from 'framer-motion';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import {
   TrendingUp,
@@ -11,19 +11,107 @@ import {
   Shield,
   ChevronDown,
   Check,
+  RefreshCw,
+  AlertCircle,
+  X,
 } from 'lucide-react';
 import { Button, Card, Header } from '../../components/ui';
-import { mockPortfolio, mockLoanEligibility, walletPlatforms } from '../../mock/data';
+import { mockLoanEligibility } from '../../mock/data';
 import { PLATFORM_ICONS } from '../../constants';
 import { formatCurrency, formatPercent, generateChartData, normalizeChartY, normalizeChartX } from '../../utils';
 import type { ChartPeriod } from '../../utils';
 import { CONTAINER_VARIANTS, ITEM_VARIANTS, ROUTES } from '../../constants';
+import { usePortfolio, useRefreshPortfolio } from '../../hooks/queries/usePortfolio';
+import { useConnectedPlatforms } from '../../hooks/queries/usePlatforms';
+import { useAuthStore, selectUser } from '../../store';
 
 export function Dashboard() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'all' | 'crypto' | 'stocks' | 'cash'>('all');
   const [chartPeriod, setChartPeriod] = useState<ChartPeriod>('24H');
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<Array<{ type: string; message: string }>>([]);
+  const [showWarnings, setShowWarnings] = useState(true);
+  const user = useAuthStore(selectUser);
+  const displayName = user?.nickname || user?.displayName || user?.name;
+
+  // Dropdown ref & visibility state
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const [showAccountsDropdown, setShowAccountsDropdown] = useState(false);
+
+  // Fetch real portfolio data
+  const { data: portfolio, isLoading: portfolioLoading } = usePortfolio();
+  const refreshMutation = useRefreshPortfolio();
+  const { data: connectedPlatforms = [] } = useConnectedPlatforms();
+
+  // Use real portfolio data; default to empty when missing
+  const portfolioData = portfolio || { totalValue: 0, change24h: 0, assets: [] };
+  const connectedAccounts = connectedPlatforms;
+
+  // Hovered point for charts
+  const [hoveredPoint, setHoveredPoint] = useState<{ index: number; x: number; y: number } | null>(null);
+
+  // Handle refresh
+  const handleRefresh = async () => {
+    try {
+      const result = await refreshMutation.mutateAsync();
+      if (result && result.warnings && result.warnings.length > 0) {
+        setWarnings(result.warnings);
+        setShowWarnings(true);
+      } else {
+        setWarnings([]);
+      }
+    } catch (error) {
+      console.error('Failed to refresh portfolio:', error);
+      setWarnings([{ type: 'error', message: 'Failed to refresh portfolio. Please try again.' }]);
+      setShowWarnings(true);
+    }
+  };
+
+  // Aggregate assets by symbol (combine same assets from different platforms)
+  const aggregatedAssets = useMemo(() => {
+    const assetMap = new Map<string, {
+      id: string;
+      symbol: string;
+      name: string;
+      amount: number;
+      value: number;
+      price: number;
+      change24h: number;
+      platforms: string[];
+      type: 'crypto' | 'stock' | 'stablecoin';
+    }>();
+
+    portfolioData.assets.forEach(asset => {
+      const existing = assetMap.get(asset.symbol);
+      if (existing) {
+        existing.amount += asset.amount;
+        existing.value += asset.value;
+        // Split platform string and add each
+        const platforms = asset.platform.split(', ').filter(p => p);
+        platforms.forEach(platform => {
+          if (!existing.platforms.includes(platform)) {
+            existing.platforms.push(platform);
+          }
+        });
+      } else {
+        const platforms = asset.platform.split(', ').filter(p => p);
+        assetMap.set(asset.symbol, {
+          id: asset.id,
+          symbol: asset.symbol,
+          name: asset.name,
+          amount: asset.amount,
+          value: asset.value,
+          price: asset.price,
+          change24h: asset.change24h,
+          platforms: platforms.length > 0 ? platforms : [asset.platform],
+          type: asset.type,
+        });
+      }
+    });
+
+    return Array.from(assetMap.values());
+  }, [portfolioData.assets]);
 
   // Get selected asset
   const selectedAsset = selectedAssetId
@@ -44,7 +132,7 @@ export function Dashboard() {
   };
 
   // Use selected asset value or total portfolio value for chart
-  const chartBaseValue = selectedAsset ? selectedAsset.value : mockPortfolio.totalValue;
+  const chartBaseValue = selectedAsset ? selectedAsset.value : portfolioData.totalValue;
 
   // Memoize chart data to prevent regeneration on mouse move
   const chartData = useMemo(
@@ -55,13 +143,13 @@ export function Dashboard() {
   const minValue = useMemo(() => Math.min(...chartData.map(d => d.value)), [chartData]);
 
   // Calculate asset allocation percentages
-  const cryptoValue = mockPortfolio.assets.filter(a => a.type === 'crypto').reduce((sum, a) => sum + a.value, 0);
-  const stocksValue = mockPortfolio.assets.filter(a => a.type === 'stock').reduce((sum, a) => sum + a.value, 0);
-  const cashValue = mockPortfolio.assets.filter(a => a.type === 'stablecoin').reduce((sum, a) => sum + a.value, 0);
+  const cryptoValue = portfolioData.assets.filter(a => a.type === 'crypto').reduce((sum, a) => sum + a.value, 0);
+  const stocksValue = portfolioData.assets.filter(a => a.type === 'stock').reduce((sum, a) => sum + a.value, 0);
+  const cashValue = portfolioData.assets.filter(a => a.type === 'stablecoin').reduce((sum, a) => sum + a.value, 0);
 
-  const cryptoPercent = (cryptoValue / mockPortfolio.totalValue) * 100;
-  const stocksPercent = (stocksValue / mockPortfolio.totalValue) * 100;
-  const cashPercent = (cashValue / mockPortfolio.totalValue) * 100;
+  const cryptoPercent = portfolioData.totalValue > 0 ? (cryptoValue / portfolioData.totalValue) * 100 : 0;
+  const stocksPercent = portfolioData.totalValue > 0 ? (stocksValue / portfolioData.totalValue) * 100 : 0;
+  const cashPercent = portfolioData.totalValue > 0 ? (cashValue / portfolioData.totalValue) * 100 : 0;
 
   // Target allocation (you can make this user-configurable later)
   const targetAllocation = { crypto: 60, stocks: 30, cash: 10 };
@@ -87,15 +175,58 @@ export function Dashboard() {
           animate="visible"
           className="space-y-6"
         >
+          {/* Warnings Banner */}
+          {warnings.length > 0 && showWarnings && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-start justify-between gap-4"
+            >
+              <div className="flex items-start gap-3 flex-1">
+                <AlertCircle className="text-amber-400 mt-0.5" size={20} />
+                <div className="flex-1">
+                  <h4 className="text-amber-400 font-semibold mb-1">Portfolio Warnings</h4>
+                  <ul className="text-sm text-text-secondary space-y-1">
+                    {warnings.map((warning, idx) => (
+                      <li key={idx}>• {warning.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowWarnings(false)}
+                className="text-text-muted hover:text-text-primary transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </motion.div>
+          )}
+
           {/* Header */}
           <motion.div variants={ITEM_VARIANTS} className="flex items-center justify-between">
             <div>
               <h1 className="font-display text-3xl font-bold text-text-primary">Dashboard</h1>
-              <p className="text-text-secondary text-sm mt-0.5">Welcome back! Here's your portfolio overview.</p>
+              <p className="text-text-secondary text-sm mt-0.5">
+                {displayName ? `Welcome ${displayName}!` : 'Welcome back!'} Here's your portfolio overview.
+              </p>
             </div>
 
-            {/* Accounts Dropdown */}
-            <div className="relative" ref={dropdownRef}>
+            <div className="flex items-center gap-3">
+              {/* Refresh Button */}
+              <Button
+                onClick={handleRefresh}
+                disabled={refreshMutation.isPending}
+                variant="secondary"
+              >
+                <RefreshCw
+                  size={18}
+                  className={refreshMutation.isPending ? 'animate-spin' : ''}
+                />
+                {refreshMutation.isPending ? 'Refreshing...' : 'Refresh Portfolio'}
+              </Button>
+
+              {/* Accounts Dropdown */}
+              <div className="relative" ref={dropdownRef}>
               <Button
                 onClick={() => setShowAccountsDropdown(!showAccountsDropdown)}
                 variant={showAccountsDropdown ? 'primary' : 'primary'}
@@ -174,6 +305,7 @@ export function Dashboard() {
                 )}
               </AnimatePresence>
             </div>
+            </div>
           </motion.div>
 
           {/* Portfolio Value Card - Enhanced visual hierarchy */}
@@ -190,21 +322,21 @@ export function Dashboard() {
                   </p>
                   <div className="flex items-baseline gap-4">
                     <h2 className="text-5xl lg:text-6xl font-bold text-text-primary">
-                      {formatCurrency(mockPortfolio.totalValue)}
+                      {portfolioLoading ? '...' : formatCurrency(portfolioData.totalValue)}
                     </h2>
                     <div
                       className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-semibold mb-2 ${
-                        mockPortfolio.change24h >= 0
+                        portfolioData.change24h >= 0
                           ? 'bg-green-500/20 text-green-400 border border-green-500/30'
                           : 'bg-red-500/20 text-red-400 border border-red-500/30'
                       }`}
                     >
-                      {mockPortfolio.change24h >= 0 ? (
+                      {portfolioData.change24h >= 0 ? (
                         <TrendingUp size={14} />
                       ) : (
                         <TrendingDown size={14} />
                       )}
-                      {formatPercent(mockPortfolio.change24h)}
+                      {formatPercent(portfolioData.change24h)}
                       <span className="text-xs opacity-75">24h</span>
                     </div>
                   </div>
@@ -214,31 +346,19 @@ export function Dashboard() {
                   <div className="text-center px-6 py-4 bg-dark-elevated/80 backdrop-blur rounded-xl border border-dark-border hover:border-altrion-500/30 transition-all">
                     <p className="text-text-muted text-xs mb-1 uppercase tracking-wider">Crypto</p>
                     <p className="text-text-primary font-bold text-lg">
-                      {formatCurrency(
-                        mockPortfolio.assets
-                          .filter(a => a.type === 'crypto')
-                          .reduce((sum, a) => sum + a.value, 0)
-                      )}
+                      {formatCurrency(cryptoValue)}
                     </p>
                   </div>
                   <div className="text-center px-6 py-4 bg-dark-elevated/80 backdrop-blur rounded-xl border border-dark-border hover:border-altrion-500/30 transition-all">
                     <p className="text-text-muted text-xs mb-1 uppercase tracking-wider">Stocks</p>
                     <p className="text-text-primary font-bold text-lg">
-                      {formatCurrency(
-                        mockPortfolio.assets
-                          .filter(a => a.type === 'stock')
-                          .reduce((sum, a) => sum + a.value, 0)
-                      )}
+                      {formatCurrency(stocksValue)}
                     </p>
                   </div>
                   <div className="text-center px-6 py-4 bg-dark-elevated/80 backdrop-blur rounded-xl border border-dark-border hover:border-altrion-500/30 transition-all">
                     <p className="text-text-muted text-xs mb-1 uppercase tracking-wider">Cash</p>
                     <p className="text-text-primary font-bold text-lg">
-                      {formatCurrency(
-                        mockPortfolio.assets
-                          .filter(a => a.type === 'stablecoin')
-                          .reduce((sum, a) => sum + a.value, 0)
-                      )}
+                      {formatCurrency(cashValue)}
                     </p>
                   </div>
                 </div>
@@ -423,11 +543,10 @@ export function Dashboard() {
                     <button
                       key={period}
                       onClick={() => setChartPeriod(period)}
-                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                        chartPeriod === period
-                          ? 'bg-altrion-500 text-text-primary'
-                          : 'text-text-muted hover:text-text-primary'
-                      }`}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${chartPeriod === period
+                        ? 'bg-altrion-500 text-text-primary'
+                        : 'text-text-muted hover:text-text-primary'
+                        }`}
                     >
                       {period}
                     </button>
@@ -607,11 +726,10 @@ export function Dashboard() {
                       <button
                         key={tab}
                         onClick={() => setActiveTab(tab)}
-                        className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
-                          activeTab === tab
-                            ? 'bg-dark-card text-text-primary'
-                            : 'text-text-muted hover:text-text-primary'
-                        }`}
+                        className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab === tab
+                          ? 'bg-dark-card text-text-primary'
+                          : 'text-text-muted hover:text-text-primary'
+                          }`}
                       >
                         {tab.charAt(0).toUpperCase() + tab.slice(1)}
                       </button>
@@ -640,9 +758,8 @@ export function Dashboard() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ delay: index * 0.05 }}
-                        className={`border-b border-dark-border/50 hover:bg-dark-elevated/50 transition-colors cursor-pointer ${
-                          selectedAssetId === asset.id ? 'bg-altrion-500/10' : ''
-                        }`}
+                        className={`border-b border-dark-border/50 hover:bg-dark-elevated/50 transition-colors cursor-pointer ${selectedAssetId === asset.id ? 'bg-altrion-500/10' : ''
+                          }`}
                         onClick={() => setSelectedAssetId(selectedAssetId === asset.id ? null : asset.id)}
                       >
                         <td className="px-5 py-3">
@@ -667,9 +784,8 @@ export function Dashboard() {
                         </td>
                         <td className="px-5 py-3">
                           <span
-                            className={`${
-                              asset.change24h >= 0 ? 'text-green-400' : 'text-red-400'
-                            }`}
+                            className={`${asset.change24h >= 0 ? 'text-green-400' : 'text-red-400'
+                              }`}
                           >
                             {formatPercent(asset.change24h)}
                           </span>
@@ -677,37 +793,33 @@ export function Dashboard() {
                         <td className="px-5 py-3">
                           {/* Platform icons - overlapping design */}
                           <div className="flex items-center -space-x-2">
-                            {[...asset.platforms].sort().slice(0, 3).map((platform) => (
-                              <div
-                                key={platform}
-                                className="group relative"
-                              >
-                                {/* Circular icon */}
-                                <div className="w-8 h-8 rounded-full bg-dark-card border-2 border-dark-bg flex items-center justify-center overflow-hidden cursor-pointer transition-all group-hover:scale-105 group-hover:z-10 group-hover:border-dark-border">
-                                  {PLATFORM_LOGOS[platform] ? (
-                                    <img
-                                      src={PLATFORM_LOGOS[platform]}
-                                      alt={platform}
-                                      className="w-5 h-5 object-contain"
-                                    />
-                                  ) : (
-                                    <span className="text-xs font-bold text-text-muted">
-                                      {platform.slice(0, 2).toUpperCase()}
-                                    </span>
-                                  )}
+                            {[...asset.platforms].sort().slice(0, 3).map((platform) => {
+                              const config = PLATFORM_ICONS[platform];
+                              const Logo = config?.logo;
+                              const Icon = config?.icon;
+                              return (
+                                <div key={platform} className="group relative">
+                                  {/* Circular icon */}
+                                  <div className="w-8 h-8 rounded-full bg-dark-card border-2 border-dark-bg flex items-center justify-center overflow-hidden cursor-pointer transition-all group-hover:scale-105 group-hover:z-10 group-hover:border-dark-border">
+                                    {Logo ? (
+                                      <img src={Logo} alt={platform} className="w-5 h-5 object-contain" />
+                                    ) : Icon ? (
+                                      <Icon size={16} />
+                                    ) : (
+                                      <span className="text-xs font-bold text-text-muted">{platform.slice(0, 2).toUpperCase()}</span>
+                                    )}
+                                  </div>
+                                  {/* Tooltip above icon */}
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center h-7 px-2.5 rounded-full bg-dark-card border border-dark-border shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
+                                    <span className="text-xs font-medium text-text-primary whitespace-nowrap">{platform}</span>
+                                  </div>
                                 </div>
-                                {/* Tooltip above icon */}
-                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 flex items-center h-7 px-2.5 rounded-full bg-dark-card border border-dark-border shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 pointer-events-none z-50">
-                                  <span className="text-xs font-medium text-text-primary whitespace-nowrap">
-                                    {platform}
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                             {/* Plus button for additional wallets */}
-                            {asset.platforms.length > 3 ? (
+                            {asset.platforms.size > 3 ? (
                               <div className="w-8 h-8 rounded-full bg-dark-elevated border-2 border-dark-border flex items-center justify-center cursor-pointer hover:bg-dark-card transition-colors">
-                                <span className="text-xs font-bold text-text-muted">+{asset.platforms.length - 3}</span>
+                                <span className="text-xs font-bold text-text-muted">+{asset.platforms.size - 3}</span>
                               </div>
                             ) : (
                               <div className="w-8 h-8 rounded-full bg-dark-elevated border-2 border-dashed border-dark-border flex items-center justify-center cursor-pointer hover:bg-dark-card hover:border-altrion-500/50 transition-colors">

@@ -3,41 +3,8 @@ import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import { Button, Card, Logo } from '../../components/ui';
-
-// Confetti component for celebration moment (peak-end rule)
-const Confetti = () => (
-  <div className="fixed inset-0 pointer-events-none overflow-hidden">
-    {[...Array(50)].map((_, i) => (
-      <motion.div
-        key={i}
-        className="absolute w-2 h-2 rounded-full"
-        style={{
-          left: `${Math.random() * 100}%`,
-          top: -20,
-          backgroundColor: [
-            '#10b981',
-            '#06b6d4',
-            '#a855f7',
-            '#ec4899',
-            '#f59e0b',
-          ][Math.floor(Math.random() * 5)],
-        }}
-        animate={{
-          y: [0, window.innerHeight + 100],
-          x: [0, (Math.random() - 0.5) * 200],
-          rotate: [0, Math.random() * 720],
-          opacity: [1, 0],
-        }}
-        transition={{
-          duration: 2 + Math.random() * 2,
-          delay: Math.random() * 0.5,
-          ease: 'easeOut',
-        }}
-      />
-    ))}
-  </div>
-);
-
+import { authService } from '../../services';
+import { useAuthStore } from '../../store';
 const steps = [
   {
     id: 1,
@@ -48,12 +15,30 @@ const steps = [
 
 export function Onboarding() {
   const navigate = useNavigate();
+  const { setUser, completeOnboarding, setJustSignedUp } = useAuthStore();
   const [showCelebration, setShowCelebration] = useState(false);
   const [form, setForm] = useState({
     displayName: '',
   });
 
-  const handleNext = () => {
+  const handleNext = async () => {
+    const nickname = form.displayName.trim();
+    if (!nickname) return;
+
+    try {
+      const updatedUser = await authService.updateNickname(nickname);
+      setUser({
+        ...updatedUser,
+        displayName: updatedUser.displayName || nickname,
+      });
+      localStorage.setItem('altrion-displayName', nickname);
+      completeOnboarding();
+      setJustSignedUp(false);
+    } catch (error) {
+      console.error('Failed to update nickname', error);
+      return;
+    }
+
     // Peak-end rule: Trigger celebration before final navigation
     setShowCelebration(true);
     setTimeout(() => {
@@ -129,7 +114,7 @@ export function Onboarding() {
           <div className="flex justify-end mt-8">
             <Button
               onClick={handleNext}
-              disabled={!canProceed()}
+              disabled={!canProceed() || showCelebration}
             >
               Continue
               <ArrowRight size={18} />
