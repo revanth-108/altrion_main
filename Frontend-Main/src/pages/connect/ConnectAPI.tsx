@@ -1,7 +1,8 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Check, X, Loader2, Shield, ArrowRight, Lock, Trophy, Star, Sparkles } from 'lucide-react';
-import { Button, Card, Logo, Input, ThemeToggle } from '../../components/ui';
+import { Check, X, Loader2, ArrowRight, Lock, Trophy, Star, Sparkles } from 'lucide-react';
+import { Button, Card, Input } from '../../components/ui';
+import { DashboardLayout } from '../../components/layout';
 import { PLATFORM_ICONS, ROUTES } from '../../constants';
 import { useConnectionStatus } from '../../hooks';
 import { useState, useEffect } from 'react';
@@ -10,34 +11,46 @@ import { usePlatforms } from '../../hooks/queries/usePlatforms';
 import EthereumProvider from '@walletconnect/ethereum-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePlaidLink } from 'react-plaid-link';
+import type { PlatformCredentials } from '@/schemas';
+
+const CONFETTI_COLORS = [
+  '#10b981',
+  '#06b6d4',
+  '#a855f7',
+  '#ec4899',
+  '#f59e0b',
+];
+
+const CONFETTI_PARTICLES = Array.from({ length: 50 }, () => ({
+  left: `${Math.random() * 100}%`,
+  color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+  x: (Math.random() - 0.5) * 200,
+  rotate: Math.random() * 720,
+  duration: 2 + Math.random() * 2,
+  delay: Math.random() * 0.5,
+}));
 
 // Confetti component for celebration moment (peak-end rule)
 const Confetti = () => (
   <div className="fixed inset-0 pointer-events-none overflow-hidden z-50">
-    {[...Array(50)].map((_, i) => (
+    {CONFETTI_PARTICLES.map((particle, i) => (
       <motion.div
         key={i}
         className="absolute w-2 h-2 rounded-full"
         style={{
-          left: `${Math.random() * 100}%`,
+          left: particle.left,
           top: -20,
-          backgroundColor: [
-            '#10b981',
-            '#06b6d4',
-            '#a855f7',
-            '#ec4899',
-            '#f59e0b',
-          ][Math.floor(Math.random() * 5)],
+          backgroundColor: particle.color,
         }}
         animate={{
           y: [0, window.innerHeight + 100],
-          x: [0, (Math.random() - 0.5) * 200],
-          rotate: [0, Math.random() * 720],
+          x: [0, particle.x],
+          rotate: [0, particle.rotate],
           opacity: [1, 0],
         }}
         transition={{
-          duration: 2 + Math.random() * 2,
-          delay: Math.random() * 0.5,
+          duration: particle.duration,
+          delay: particle.delay,
           ease: 'easeOut',
         }}
       />
@@ -48,9 +61,11 @@ const Confetti = () => (
 export function ConnectAPI() {
   const navigate = useNavigate();
   const location = useLocation();
-  const selectedPlatformIds = (location.state?.platforms as string[]) || [];
+  const selectedPlatformIds = ((location.state?.platforms as string[]) || [])
+    .filter((platformId) => platformId === 'plaid');
+  const connectionPlatformIds = selectedPlatformIds.length > 0 ? selectedPlatformIds : ['plaid'];
   const [selectedPlatformId, setSelectedPlatformId] = useState<string | null>(
-    selectedPlatformIds[0] || null
+    connectionPlatformIds[0]
   );
   const [credentials, setCredentials] = useState({ username: '', password: '' });
   const [walletConnecting, setWalletConnecting] = useState(false);
@@ -62,7 +77,7 @@ export function ConnectAPI() {
   const queryClient = useQueryClient();
   const { data: platformGroups } = usePlatforms();
   const platforms = platformGroups || { crypto: [], banks: [], brokers: [] };
-  const allPlatforms = [...platforms.crypto, ...platforms.banks, ...platforms.brokers];
+  const allPlatforms = platforms.banks;
 
   const connectPlatform = async (
     platformId: string,
@@ -79,12 +94,12 @@ export function ConnectAPI() {
   };
 
   const { connections, successCount, retryConnection } = useConnectionStatus({
-    platformIds: selectedPlatformIds,
+    platformIds: connectionPlatformIds,
     autoStart: false,
     connectPlatform,
   });
 
-  const buildCredentials = () => {
+  const buildCredentials = (): PlatformCredentials | Record<string, string> | null => {
     if (!selectedPlatformId) return null;
     if (!credentials.username) return null;
 
@@ -168,33 +183,50 @@ export function ConnectAPI() {
   const selectedPlatform = allPlatforms.find(p => p.id === selectedPlatformId);
   const isWallet = selectedPlatformId === 'wallet';
   const isPlaid = selectedPlatformId === 'plaid';
+  const isOAuthReturn = window.location.href.includes('oauth_state_id');
 
   useEffect(() => {
     const fetchPlaidToken = async () => {
-      if (!isPlaid) return;
+      if (!isPlaid && !isOAuthReturn) return;
+      if (isOAuthReturn) {
+        const cachedToken = localStorage.getItem('plaid_link_token');
+        if (cachedToken) {
+          setPlaidToken(cachedToken);
+          return;
+        }
+      }
       try {
         setPlaidError(null);
         const token = await platformService.getPlaidLinkToken();
+        localStorage.setItem('plaid_link_token', token);
         setPlaidToken(token);
       } catch (error) {
         console.error('Failed to get Plaid link token', error);
-        setPlaidError('Failed to initialize Plaid. Please try again.');
+        setPlaidError('Failed to initialize bank connection. Please try again.');
       }
     };
     fetchPlaidToken();
-  }, [isPlaid]);
+  }, [isPlaid, isOAuthReturn]);
 
   const { open: openPlaid, ready: plaidReady } = usePlaidLink({
     token: plaidToken || '',
-    onSuccess: async (public_token) => {
+    receivedRedirectUri: isOAuthReturn ? window.location.href : undefined,
+    onSuccess: async (public_token: string) => {
       try {
-        const result = await platformService.connectWithCredentials('plaid', { public_token });
-        if (result.status !== 'success') {
-          setPlaidError(result.message || 'Plaid connection failed.');
+        const result = await platformService.exchangePlaidToken(public_token);
+        if (!result.success) {
+          setPlaidError('Bank connection failed. Please try again.');
+        } else {
+          // Refresh connected platforms list
+          await queryClient.invalidateQueries({
+            queryKey: ['platforms', 'connected'],
+          });
+          await queryClient.invalidateQueries({ queryKey: ['plaid'] });
+          await queryClient.invalidateQueries({ queryKey: ['portfolio'] });
         }
       } catch (error) {
-        console.error('Plaid connect failed', error);
-        setPlaidError('Plaid connection failed.');
+        console.error('Plaid token exchange failed', error);
+        setPlaidError('Bank connection failed. Please try again.');
       }
     },
     onExit: () => {},
@@ -209,6 +241,18 @@ export function ConnectAPI() {
         retryConnection(connectionIndex, platformCredentials);
       }
     }
+  };
+
+  const handlePrimaryClick = () => {
+    if (isWallet) {
+      void connectWallet();
+      return;
+    }
+    if (isPlaid) {
+      openPlaid();
+      return;
+    }
+    handleConnectAccount();
   };
 
   // Check if all connections are either success or error (completed)
@@ -232,43 +276,35 @@ export function ConnectAPI() {
     }
   }, [allConnectionsCompleted, connections]);
 
-  // Auto-navigate to dashboard when all connections completed but none successful (no confetti case)
+  // Auto-navigate to crypto upload step when all connections completed but none successful
   useEffect(() => {
     if (allConnectionsCompleted && successCount === 0) {
       const timer = setTimeout(() => {
-        navigate(ROUTES.DASHBOARD);
+        navigate(ROUTES.CONNECT_CRYPTO);
       }, 2000);
       return () => clearTimeout(timer);
     }
   }, [allConnectionsCompleted, successCount, navigate]);
 
-  // Auto-navigate to dashboard after successful connections
+  // Auto-navigate to crypto upload step after successful connections
   useEffect(() => {
     if (allConnectionsCompleted && successCount > 0) {
       const timer = setTimeout(() => {
-        navigate(ROUTES.DASHBOARD);
+        navigate(ROUTES.CONNECT_CRYPTO);
       }, 3000);
       return () => clearTimeout(timer);
     }
   }, [allConnectionsCompleted, successCount, navigate]);
 
-  return (
-    <div className="min-h-screen bg-dark-bg">
-      {/* Header */}
-      <div className="p-4 border-b border-dark-border">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <Logo size="sm" />
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2 text-xs">
-              <Shield size={14} className="text-altrion-400" />
-              <span className="text-text-secondary">Secure</span>
-            </div>
-            <ThemeToggle />
-          </div>
-        </div>
-      </div>
+  useEffect(() => {
+    if (isOAuthReturn && plaidReady) {
+      openPlaid();
+    }
+  }, [isOAuthReturn, plaidReady, openPlaid]);
 
-      <div className="max-w-7xl mx-auto p-6">
+  return (
+    <DashboardLayout>
+      <div>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left Sidebar - Selected Platforms */}
           <div className="lg:col-span-1">
@@ -365,7 +401,7 @@ export function ConnectAPI() {
                       <div>
                         <h3 className="font-display text-2xl font-bold text-text-primary">{selectedPlatform.name}</h3>
                         <p className="text-text-secondary text-sm">
-                          {isWallet ? 'Connect using WalletConnect' : isPlaid ? 'Connect your bank via Plaid' : 'Enter your credentials'}
+                          {isWallet ? 'Connect using WalletConnect' : isPlaid ? 'Connect your bank account securely' : 'Enter your credentials'}
                         </p>
                       </div>
                     </div>
@@ -435,7 +471,7 @@ export function ConnectAPI() {
                         <div className="flex-1">
                           <Button
                             size="lg"
-                            onClick={isWallet ? connectWallet : isPlaid ? openPlaid : handleConnectAccount}
+                            onClick={handlePrimaryClick}
                             disabled={isWallet ? walletConnecting : isPlaid ? !plaidReady : (!credentials.username || !credentials.password)}
                           >
                             {isWallet ? (
@@ -564,7 +600,7 @@ export function ConnectAPI() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.4 }}
-                  className="font-display text-4xl font-bold text-text-primary mb-3 tracking-tight"
+                  className="font-display text-2xl sm:text-4xl font-bold text-text-primary mb-3 tracking-tight"
                 >
                   You're all set{localStorage.getItem('altrion-displayName') ? `, ${localStorage.getItem('altrion-displayName')}` : ''}!
                 </motion.h2>
@@ -596,7 +632,7 @@ export function ConnectAPI() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 1 }}
                 >
-                  <Button size="lg" onClick={() => navigate(ROUTES.DASHBOARD)}>
+                  <Button size="lg" onClick={() => navigate(ROUTES.CONNECT_CRYPTO)}>
                     Go to Dashboard
                     <ArrowRight size={18} />
                   </Button>
@@ -606,6 +642,6 @@ export function ConnectAPI() {
           )}
         </AnimatePresence>
       </div>
-    </div>
+    </DashboardLayout>
   );
 }

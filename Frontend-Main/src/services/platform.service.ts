@@ -1,6 +1,8 @@
-import type { Platform, ConnectionStatus } from '@/types';
+import type { Platform, ConnectedAccount, ConnectionStatus } from '@/types';
 import type { PlatformCredentials, ApiKeyCredentials } from '@/schemas';
 import { api } from './api';
+
+const simulateDelay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Backend response types
 interface BackendPlatform {
@@ -38,37 +40,33 @@ export const platformService = {
         category: platform.category,
       }));
 
-      const walletPlatforms = platforms.filter((platform) => platform.id === 'wallet');
-      const bankPlatforms = platforms.filter((platform) => platform.id === 'plaid');
-      const fallbackWallet: Platform = {
-        id: 'wallet',
-        name: 'Wallet',
-        icon: '/wallet.svg',
-        category: 'crypto',
+      const bankPlatforms = platforms
+        .filter((platform) => platform.id === 'plaid')
+        .map((platform) => ({
+          ...platform,
+          name: 'Bank Account',
+        }));
+      const fallbackPlaid: Platform = {
+        id: 'plaid',
+        name: 'Bank Account',
+        icon: '/wallet-logos/plaid.svg',
+        category: 'bank',
       };
 
-      const cryptoPlatforms = walletPlatforms.length > 0 ? walletPlatforms : [fallbackWallet];
       return {
-        crypto: cryptoPlatforms,
-        banks: bankPlatforms,
+        crypto: [],
+        banks: bankPlatforms.length > 0 ? bankPlatforms : [fallbackPlaid],
         brokers: [],
       };
     } catch (error) {
       console.error('Failed to fetch platforms:', error);
       return {
-        crypto: [
-          {
-            id: 'wallet',
-            name: 'Wallet',
-            icon: '/wallet.svg',
-            category: 'crypto',
-          },
-        ],
+        crypto: [],
         banks: [
           {
             id: 'plaid',
-            name: 'Plaid',
-            icon: '/plaid.svg',
+            name: 'Bank Account',
+            icon: '/wallet-logos/plaid.svg',
             category: 'bank',
           },
         ],
@@ -85,6 +83,9 @@ export const platformService = {
     credentials: PlatformCredentials | Record<string, string>
   ): Promise<ConnectionResult> {
     try {
+      if (platformId === 'plaid') {
+        console.warn('Legacy Plaid connect route called. Prefer the dedicated /plaid/exchange-token flow.');
+      }
       const { data } = await api.post<BackendConnectionResponse>(
         `/platforms/${platformId}/connect`,
         { credentials }
@@ -109,6 +110,42 @@ export const platformService = {
     const { data } = await api.post<{ success: boolean; link_token: string }>('/plaid/link-token');
     return data.link_token;
   },
+
+  /**
+   * Exchange a Plaid public_token for a permanent access_token.
+   * Called after user completes the Plaid Link UI flow.
+   * Uses the new dedicated /plaid/exchange-token endpoint instead of
+   * the generic /platforms/plaid/connect endpoint.
+   */
+  async exchangePlaidToken(publicToken: string): Promise<{
+    success: boolean;
+    item_id: string;
+    accounts: Array<{
+      provider_account_id: string;
+      name: string;
+      type: string;
+      subtype: string;
+      mask: string;
+    }>;
+    account_count: number;
+  }> {
+    const { data } = await api.post<{
+      success: boolean;
+      item_id: string;
+      accounts: Array<{
+        provider_account_id: string;
+        name: string;
+        type: string;
+        subtype: string;
+        mask: string;
+      }>;
+      account_count: number;
+    }>('/plaid/exchange-token', {
+      public_token: publicToken,
+    });
+    return data;
+  },
+
 
   /**
    * Connect to a platform using API keys
@@ -156,27 +193,57 @@ export const platformService = {
   /**
    * Get connected platforms
    */
-  async getConnectedPlatforms(): Promise<Platform[]> {
+  async getConnectedPlatforms(): Promise<ConnectedAccount[]> {
     try {
       const { data } = await api.get<Array<{
         platform: BackendPlatform;
         accounts: Array<{
           id: string;
+          provider: string;
+          provider_account_id: string;
           name: string;
+          account_type: string | null;
+          subtype: string | null;
+          classification?: 'asset' | 'liability' | 'other';
+          role_label?: string | null;
+          mask: string | null;
+          institution_name: string | null;
+          item_id: string | null;
+          balance_available: number | null;
+          balance_current: number | null;
+          balance_limit: number | null;
+          balance_currency: string | null;
+          debt_amount?: number | null;
           last_synced_at: string | null;
           error_message: string | null;
         }>;
       }>>('/platforms/connected');
       
       // Transform to frontend format
-      const platforms: Platform[] = [];
+      const platforms: ConnectedAccount[] = [];
       data.forEach((item) => {
         item.accounts.forEach((account) => {
           platforms.push({
             id: account.id,
+            provider: account.provider,
+            providerAccountId: account.provider_account_id,
             name: account.name,
             icon: item.platform.icon,
             category: item.platform.category,
+            accountType: account.account_type,
+            subtype: account.subtype,
+            classification: account.classification,
+            roleLabel: account.role_label,
+            mask: account.mask,
+            institutionName: account.institution_name,
+            itemId: account.item_id,
+            balanceAvailable: account.balance_available,
+            balanceCurrent: account.balance_current,
+            balanceLimit: account.balance_limit,
+            balanceCurrency: account.balance_currency,
+            debtAmount: account.debt_amount,
+            lastSyncedAt: account.last_synced_at,
+            errorMessage: account.error_message,
           });
         });
       });
@@ -209,6 +276,7 @@ export const platformService = {
    * Sync data from a connected platform
    */
   async syncPlatform(_platformId: string): Promise<{ syncedAt: string }> {
+    void _platformId;
     // TODO: Replace with real API call
     // const { data } = await api.post(`/platforms/${platformId}/sync`);
     // return data;
