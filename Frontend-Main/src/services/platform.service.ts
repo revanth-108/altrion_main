@@ -119,6 +119,7 @@ export const platformService = {
    */
   async exchangePlaidToken(publicToken: string): Promise<{
     success: boolean;
+    persisted?: boolean;
     item_id: string;
     accounts: Array<{
       provider_account_id: string;
@@ -131,6 +132,7 @@ export const platformService = {
   }> {
     const { data } = await api.post<{
       success: boolean;
+      persisted?: boolean;
       item_id: string;
       accounts: Array<{
         provider_account_id: string;

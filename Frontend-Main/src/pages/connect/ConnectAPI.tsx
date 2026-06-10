@@ -6,7 +6,7 @@ import { DashboardLayout } from '../../components/layout';
 import { PLATFORM_ICONS, ROUTES } from '../../constants';
 import { useConnectionStatus } from '../../hooks';
 import { useState, useEffect } from 'react';
-import { platformService } from '../../services';
+import { ApiError, platformService } from '../../services';
 import { usePlatforms } from '../../hooks/queries/usePlatforms';
 import EthereumProvider from '@walletconnect/ethereum-provider';
 import { useQueryClient } from '@tanstack/react-query';
@@ -216,6 +216,8 @@ export function ConnectAPI() {
         const result = await platformService.exchangePlaidToken(public_token);
         if (!result.success) {
           setPlaidError('Bank connection failed. Please try again.');
+        } else if (result.persisted === false) {
+          setPlaidError('Bank connected, but data storage consent is not enabled yet. Please complete onboarding terms or update your profile consent.');
         } else {
           // Refresh connected platforms list
           await queryClient.invalidateQueries({
@@ -226,7 +228,11 @@ export function ConnectAPI() {
         }
       } catch (error) {
         console.error('Plaid token exchange failed', error);
-        setPlaidError('Bank connection failed. Please try again.');
+        if (error instanceof ApiError && error.status === 403) {
+          setPlaidError(error.message || 'Data storage consent is required before connecting financial accounts.');
+        } else {
+          setPlaidError('Bank connection failed. Please try again.');
+        }
       }
     },
     onExit: () => {},
