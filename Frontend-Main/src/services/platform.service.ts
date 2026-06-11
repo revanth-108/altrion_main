@@ -83,9 +83,6 @@ export const platformService = {
     credentials: PlatformCredentials | Record<string, string>
   ): Promise<ConnectionResult> {
     try {
-      if (platformId === 'plaid') {
-        console.warn('Legacy Plaid connect route called. Prefer the dedicated /plaid/exchange-token flow.');
-      }
       const { data } = await api.post<BackendConnectionResponse>(
         `/platforms/${platformId}/connect`,
         { credentials }

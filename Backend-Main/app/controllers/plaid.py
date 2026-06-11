@@ -1,44 +1,61 @@
 """
 Plaid Link endpoints
 """
+import inspect
 from datetime import datetime, date
-from typing import Optional
+from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, text
+from sqlalchemy import select, text
 from pydantic import BaseModel
 
 from app.core.auth import get_current_user as get_authenticated_user
 from app.core.database import get_db
 from app.core.logging import get_logger
-from app.models.user import User
 from app.models.account import Account
 from app.models.provider_token import ProviderToken
 from app.models.transaction import Transaction
 from app.services.providers.plaid import PlaidAdapter
+from app.services.plaid_helpers import (
+    get_plaid_token_row_for_user,
+    get_user_by_supabase_id,
+    PLAID_ITEM_NOT_FOUND_DETAIL,
+)
 from app.services import plaid_persist
 from app.services.plaid_investments_sync import sync_plaid_investments_for_user
 from app.services.plaid_sync import (
     account_role_label,
     classify_plaid_account,
+    deactivate_plaid_accounts_for_item_ids,
+    deactivate_plaid_provider_tokens_for_item_ids,
+    get_active_plaid_item_ids_for_institution,
+    get_plaid_transaction_sync_status_for_user,
     get_plaid_token_rows_for_user,
     mark_plaid_item_failed,
     is_liability_account,
     positive_debt_amount,
+    request_plaid_transactions_refresh_for_user,
+    plaid_item_supports_transactions,
     sync_plaid_refresh_for_user,
+    sync_plaid_transactions_for_item,
     sync_plaid_step_for_user,
     sync_plaid_balances_for_item,
     sync_plaid_item_after_connection,
     sync_plaid_liabilities_for_item,
     sync_plaid_recurring_for_item,
-    sync_plaid_transactions_for_item,
 )
 from app.services.plaid_utils import plaid_error_context
 from app.services.plaid_safe import parse_token_data, normalize_plaid_value, value_type
 from app.services.data_consent import should_persist_user_data
+from app.schemas.plaid import (
+    PlaidExchangeTokenResponse,
+    PlaidRefreshResponse,
+    PlaidSyncStatusResponse,
+    PlaidTransactionsSyncUpdatesResponse,
+)
 
 
-def _account_display_name(account) -> str:
+def _account_display_name(account: Account) -> str:
     """Build a readable name from unencrypted account fields.
 
     accounts.name and accounts.mask are Supabase column-level encrypted;
@@ -64,6 +81,42 @@ logger = get_logger()
 router = APIRouter()
 
 
+def _plaid_response(
+    *,
+    status: str,
+    message: str,
+    success: bool = True,
+    items: list[dict[str, Any]] | None = None,
+    errors: list[dict[str, Any]] | None = None,
+    counts: dict[str, int] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Build a stable Plaid API response envelope without dropping legacy keys."""
+    response: dict[str, Any] = {
+        "success": success,
+        "status": status,
+        "message": message,
+        "items": items or [],
+        "errors": errors or [],
+    }
+    if counts is not None:
+        response["counts"] = counts
+    response.update(extra)
+    return response
+
+
+def _log_legacy_plaid_usage(event: str, *, route: str, user_id: str, **extra: Any) -> None:
+    """Emit a structured legacy-path usage log for audit/removal planning."""
+    logger.warning(
+        event,
+        route=route,
+        user_id=user_id,
+        timestamp=datetime.utcnow().isoformat(),
+        caller=inspect.stack()[1].function,
+        **extra,
+    )
+
+
 class ExchangeTokenRequest(BaseModel):
     # The one-time public_token received from Plaid Link UI
     # Must be exchanged within 30 minutes
@@ -87,39 +140,19 @@ class InvestmentTransactionsRequest(BaseModel):
     account_ids: str = None
 
 
-async def get_plaid_token_for_user(user_id, db, item_id: str = None) -> tuple:
-    """
-    Fetch the Plaid access_token for a user from provider_tokens.
-
-    Args:
-        user_id: Internal DB user UUID
-        db: Database session
-        item_id: Optional specific item_id. If None, returns most recent.
-
-    Returns:
-        (access_token, item_id) tuple
-
-    Raises:
-        HTTPException 404 if no Plaid token found for this user
-    """
-    from sqlalchemy import desc
-    stmt = select(ProviderToken).where(
-        ProviderToken.user_id == user_id,
-        ProviderToken.provider == "plaid",
-    )
-    if item_id:
-        stmt = stmt.where(ProviderToken.item_id == item_id)
-    else:
-        # Get most recently created token if no item_id specified
-        stmt = stmt.order_by(desc(ProviderToken.created_at))
-
-    result = await db.execute(stmt)
-    token_row = result.scalar_one_or_none()
-
+async def get_plaid_token_for_user(user_id: str, db, item_id: str | None = None) -> tuple[str, str]:
+    """Backward-compatible wrapper around the shared Plaid lookup helper."""
+    token_row = await get_plaid_token_row_for_user(db, user_id, item_id=item_id)
     if not token_row:
-        raise HTTPException(
-            status_code=404,
-            detail="No Plaid account connected. Please connect a bank account first."
+        raise HTTPException(status_code=404, detail=PLAID_ITEM_NOT_FOUND_DETAIL)
+    if item_id is None and token_row.item_id is None:
+        # Compatibility path: legacy null-item provider tokens still fall back to
+        # the newest row until the migration window closes.
+        _log_legacy_plaid_usage(
+            "legacy_plaid_item_fallback_used",
+            route="/plaid/* token lookup",
+            user_id=str(user_id),
+            compatibility_field="item_id=None",
         )
 
     token_data = parse_token_data(token_row.token_data)
@@ -139,30 +172,18 @@ async def get_plaid_token_for_user(user_id, db, item_id: str = None) -> tuple:
     return access_token, token_row.item_id
 
 
+async def _get_plaid_token_row_for_user(user_id: str, db, item_id: str) -> ProviderToken | None:
+    return await get_plaid_token_row_for_user(db, user_id, item_id=item_id)
+
+
 @router.post("/link-token")
 async def create_link_token(
     current_user: dict = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Create Plaid Link token for the current user"""
-    # --- temporary debug: confirm env vars reach the container ---
-    from app.core.config import settings
-    logger.info(
-        "plaid link-token env check",
-        PLAID_CLIENT_ID_present=bool(settings.PLAID_CLIENT_ID and settings.PLAID_CLIENT_ID != "your-plaid-client-id"),
-        PLAID_SECRET_present=bool(settings.PLAID_SECRET and settings.PLAID_SECRET != "your-plaid-secret"),
-        PLAID_ENVIRONMENT=settings.PLAID_ENVIRONMENT,
-    )
-    # --- end debug ---
-
     user_id = current_user["user_id"]
-
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     try:
         adapter = PlaidAdapter()
@@ -182,7 +203,7 @@ async def create_link_token(
         )
 
 
-@router.post("/exchange-token")
+@router.post("/exchange-token", response_model=PlaidExchangeTokenResponse)
 async def exchange_token(
     request: ExchangeTokenRequest,
     current_user: dict = Depends(get_authenticated_user),
@@ -206,13 +227,12 @@ async def exchange_token(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     adapter = PlaidAdapter()
+    user_pk = user.id
+    internal_user_id = str(user_pk)
+    has_storage_consent = should_persist_user_data(user)
 
     try:
         # Step 1: Exchange public_token for access_token + item_id
@@ -223,7 +243,7 @@ async def exchange_token(
         # Step 2: Store token in provider_tokens
         # One row per (user_id, provider, item_id) — supports multiple banks
         stmt = select(ProviderToken).where(
-            ProviderToken.user_id == user.id,
+            ProviderToken.user_id == user_pk,
             ProviderToken.provider == "plaid",
             ProviderToken.item_id == item_id,
         )
@@ -233,12 +253,14 @@ async def exchange_token(
         if existing_token:
             existing_token.token_data = {"access_token": access_token}
             existing_token.item_id = item_id
+            existing_token.is_active = True
         else:
             db.add(ProviderToken(
-                user_id=user.id,
+                user_id=user_pk,
                 provider="plaid",
                 token_data={"access_token": access_token},
                 item_id=item_id,
+                is_active=True,
             ))
 
         await db.commit()
@@ -256,16 +278,16 @@ async def exchange_token(
             await db.rollback()
             logger.warning(
                 "Plaid item status sync failed during exchange",
-                user_id=str(user.id),
+                user_id=internal_user_id,
                 item_id=item_id,
                 **plaid_error_context(status_exc),
             )
 
         # Gate: if user hasn't consented to storage, stop here.
-        if not should_persist_user_data(user):
+        if not has_storage_consent:
             logger.info(
                 "Plaid token stored but account persistence blocked (storage consent not given)",
-                user_id=str(user.id),
+                user_id=internal_user_id,
                 item_id=item_id,
             )
             raise HTTPException(
@@ -273,18 +295,49 @@ async def exchange_token(
                 detail="Data storage consent is required before connecting financial accounts.",
             )
 
+        institution_id = item_status.get("institution_id") if item_status else None
+
+        duplicate_item_ids: list[str] = []
+        if institution_id:
+            duplicate_item_ids = await get_active_plaid_item_ids_for_institution(
+                db=db,
+                user_id=user_pk,
+                institution_id=institution_id,
+                exclude_item_id=item_id,
+            )
+            if duplicate_item_ids:
+                deactivated_count = await deactivate_plaid_accounts_for_item_ids(
+                    db=db,
+                    user_id=user_pk,
+                    item_ids=duplicate_item_ids,
+                    reason="Replaced by a newer Plaid connection for the same institution",
+                )
+                deactivated_token_count = await deactivate_plaid_provider_tokens_for_item_ids(
+                    db=db,
+                    user_id=user_pk,
+                    item_ids=duplicate_item_ids,
+                )
+                logger.warning(
+                    "Duplicate Plaid institution detected",
+                    user_id=internal_user_id,
+                    institution_id=institution_id,
+                    new_item_id=item_id,
+                    replaced_item_ids=duplicate_item_ids,
+                    deactivated_account_count=deactivated_count,
+                    deactivated_token_count=deactivated_token_count,
+                )
+
         # Step 3: Fetch accounts for this item
         accounts_data = await adapter.fetch_accounts(token_data)
 
         # Step 4: Store each account in the accounts table
         connected_accounts = []
-        institution_id = item_status.get("institution_id") if item_status else None
         for raw_acc in accounts_data:
             acc = normalize_plaid_value(raw_acc)
             if not acc:
                 logger.warning(
                     "Plaid exchange account parse skipped",
-                    user_id=str(user.id),
+                    user_id=internal_user_id,
                     item_id=item_id,
                     account_type=value_type(raw_acc),
                 )
@@ -293,18 +346,17 @@ async def exchange_token(
             if not plaid_account_id:
                 logger.warning(
                     "Plaid exchange account missing account id",
-                    user_id=str(user.id),
+                    user_id=internal_user_id,
                     item_id=item_id,
                     account_type=value_type(raw_acc),
                 )
                 continue
-            stmt = select(Account).where(
-                Account.user_id == user.id,
-                Account.provider == "plaid",
-                Account.provider_account_id == plaid_account_id,
+            existing_account = await plaid_persist.find_existing_plaid_account(
+                db=db,
+                user_id=user_pk,
+                item_id=item_id,
+                provider_account_id=plaid_account_id,
             )
-            result = await db.execute(stmt)
-            existing_account = result.scalar_one_or_none()
 
             if existing_account:
                 # Re-connecting — update fields
@@ -319,7 +371,7 @@ async def exchange_token(
             else:
                 # New account
                 db.add(Account(
-                    user_id=user.id,
+                    user_id=user_pk,
                     provider="plaid",
                     provider_account_id=plaid_account_id,
                     name=acc.get("name"),
@@ -344,7 +396,7 @@ async def exchange_token(
 
         logger.info(
             "Plaid token exchanged and accounts stored",
-            user_id=str(user.id),
+            user_id=internal_user_id,
             item_id=item_id,
             account_count=len(connected_accounts),
         )
@@ -354,21 +406,62 @@ async def exchange_token(
             user=user,
             item_id=item_id,
             access_token=access_token,
+            available_products=item_status.get("available_products") if item_status else None,
+            billed_products=item_status.get("billed_products") if item_status else None,
         )
 
-        return {
-            "success": True,
-            "item_id": item_id,
-            "accounts": connected_accounts,
-            "account_count": len(connected_accounts),
-            "initial_sync": initial_sync,
-        }
+        warning_items = (
+            [{
+                "item_id": item_id,
+                "step": "exchange-token",
+                "success": True,
+                "message": "An existing Plaid connection for this institution was replaced by the newest item.",
+                "institution_id": institution_id,
+                "replaced_item_ids": duplicate_item_ids,
+            }]
+            if duplicate_item_ids
+            else []
+        )
+        initial_sync_errors = initial_sync.get("errors", [])
+        return _plaid_response(
+            status="synced",
+            message="Plaid item connected.",
+            items=[
+                {
+                    "item_id": item_id,
+                    "step": "exchange-token",
+                    "success": True,
+                    "message": "Plaid item connected.",
+                    "added": len(connected_accounts),
+                    "modified": 0,
+                    "removed": 0,
+                    "details": {
+                        "account_count": len(connected_accounts),
+                        "duplicate_institution_detected": bool(duplicate_item_ids),
+                        "replaced_item_ids": duplicate_item_ids,
+                    },
+                }
+            ],
+            errors=initial_sync_errors,
+            counts={
+                "accounts": len(connected_accounts),
+                "initial_sync_errors": len(initial_sync_errors),
+                "warnings": len(warning_items),
+            },
+            item_id=item_id,
+            accounts=connected_accounts,
+            account_count=len(connected_accounts),
+            duplicate_institution_detected=bool(duplicate_item_ids),
+            replaced_item_ids=duplicate_item_ids,
+            warnings=warning_items,
+            initial_sync=initial_sync,
+        )
 
     except HTTPException:
         raise
     except Exception as e:
         await db.rollback()
-        logger.error("Plaid token exchange failed", user_id=user_id, **plaid_error_context(e))
+        logger.error("Plaid token exchange failed", user_id=internal_user_id, **plaid_error_context(e))
         raise HTTPException(status_code=502, detail=f"Token exchange failed: {str(e)}")
 
 
@@ -390,11 +483,7 @@ async def get_accounts(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     acc_query = select(Account).where(
         Account.user_id == user.id,
@@ -448,11 +537,7 @@ async def get_balances(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     acc_query = select(Account).where(
         Account.user_id == user.id,
@@ -518,11 +603,7 @@ async def sync_account_balances(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     if not should_persist_user_data(user):
         return {"success": True, "persisted": False, "synced": [], "errors": [], "synced_count": 0, "error_count": 0}
@@ -614,11 +695,7 @@ async def sync_transactions(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     if not should_persist_user_data(user):
         return {"success": True, "persisted": False, "added": [], "modified": [], "removed": [], "next_cursor": None, "has_more": False, "summary": {}}
@@ -700,6 +777,36 @@ async def sync_transactions(
         )
 
 
+@router.post("/transactions/refresh")
+async def refresh_transactions(
+    current_user: dict = Depends(get_authenticated_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Request Plaid to re-check transactions for active transaction-capable Items.
+
+    This endpoint only requests a refresh. It does not fetch new transactions
+    immediately; Plaid will later emit SYNC_UPDATES_AVAILABLE if new data exists.
+    """
+    user_id = current_user["user_id"]
+
+    user = await get_user_by_supabase_id(db, user_id)
+
+    if not should_persist_user_data(user):
+        return {"success": True, "requested": False, "items": [], "errors": [], "item_count": 0}
+
+    refresh_result = await request_plaid_transactions_refresh_for_user(db=db, user=user)
+    if refresh_result["item_count"] == 0:
+        raise HTTPException(status_code=404, detail="No Plaid account connected. Please connect a bank account first.")
+    return {
+        "success": refresh_result["success"],
+        "requested": True,
+        "item_count": refresh_result["item_count"],
+        "items": refresh_result["items"],
+        "errors": refresh_result["errors"],
+    }
+
+
 @router.get("/transactions")
 async def get_transactions(
     item_id: str = None,
@@ -726,15 +833,19 @@ async def get_transactions(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     from sqlalchemy import func as sql_func
 
-    txn_query = select(Transaction).where(Transaction.user_id == user.id)
+    txn_query = select(Transaction).join(
+        Account,
+        Transaction.account_id == Account.id,
+    ).where(
+        Transaction.user_id == user.id,
+        Account.user_id == user.id,
+        Account.provider == "plaid",
+        Account.is_active == True,
+    )
 
     if account_id:
         txn_query = txn_query.where(Transaction.account_id == account_id)
@@ -749,6 +860,7 @@ async def get_transactions(
             Account.user_id == user.id,
             Account.provider == "plaid",
             Account.item_id == item_id,
+            Account.is_active == True,
         )
         result = await db.execute(acc_stmt)
         item_account_ids = [row[0] for row in result.all()]
@@ -822,11 +934,7 @@ async def get_recurring_transactions(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     rows = await _read_recurring_streams(db, user.id)
     inflow_streams, outflow_streams = _format_recurring_rows(rows)
@@ -895,11 +1003,7 @@ async def sync_recurring_transactions(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     if not should_persist_user_data(user):
         return {"success": True, "persisted": False, "inflow_streams": [], "outflow_streams": [], "summary": {"inflow_count": 0, "outflow_count": 0}}
@@ -1013,11 +1117,7 @@ async def sync_investments(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     if not should_persist_user_data(user):
         return {"success": True, "persisted": False, "synced_items": [], "errors": [], "summary": {"items_synced": 0, "items_failed": 0, "total_securities_upserted": 0, "total_holdings_upserted": 0}}
@@ -1081,11 +1181,7 @@ async def sync_investment_transactions(
 
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     if not should_persist_user_data(user):
         return {"success": True, "persisted": False, "investment_transactions": [], "securities": [], "total_investment_transactions": 0, "summary": {"added": 0, "updated": 0, "skipped": 0}}
@@ -1357,11 +1453,7 @@ async def get_investment_holdings(
 
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     # Build holdings query with optional item_id filter
     holdings_query = select(Holding, Security, Account).outerjoin(
@@ -1370,6 +1462,7 @@ async def get_investment_holdings(
         Account, Holding.account_id == Account.id
     ).where(
         Holding.user_id == user.id,
+        Account.is_active == True,
     )
 
     if item_id:
@@ -1437,11 +1530,7 @@ async def get_investment_transactions(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     access_token, resolved_item_id = await get_plaid_token_for_user(
         user.id, db, request.item_id
@@ -1772,11 +1861,7 @@ async def get_liabilities(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     data = await _read_liabilities_from_db(db, user.id)
 
@@ -1819,11 +1904,7 @@ async def sync_liabilities(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     if not should_persist_user_data(user):
         return {"success": True, "persisted": False, "credit": [], "credit_cards": [], "mortgage": [], "student": [], "loans": [], "total_liabilities": 0, "liabilities_total": 0, "summary": {"credit_count": 0, "mortgage_count": 0, "student_count": 0, "loan_count": 0, "total_liabilities": 0}}
@@ -1910,7 +1991,7 @@ async def sync_liabilities(
         raise HTTPException(status_code=502, detail=f"Liabilities sync failed: {str(e)}")
 
 
-@router.post("/refresh")
+@router.post("/refresh", response_model=PlaidRefreshResponse)
 async def refresh_plaid_data(
     current_user: dict = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
@@ -1924,27 +2005,251 @@ async def refresh_plaid_data(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     if not should_persist_user_data(user):
-        return {"success": True, "persisted": False, "steps": [], "items": [], "errors": [], "item_count": 0}
+        return _plaid_response(
+            status="skipped",
+            message="Plaid refresh skipped because storage consent is missing.",
+            success=True,
+            items=[],
+            errors=[],
+            counts={"items": 0, "errors": 0},
+            persisted=False,
+            steps=[],
+            item_count=0,
+        )
 
     refresh_result = await sync_plaid_refresh_for_user(db=db, user=user)
     if refresh_result["item_count"] == 0:
         raise HTTPException(status_code=404, detail="No Plaid account connected. Please connect a bank account first.")
-    return {
-        "success": refresh_result["success"],
-        "persisted": True,
-        "item_count": refresh_result["item_count"],
-        "steps": refresh_result["steps"],
-        "items": refresh_result["items"],
-        "errors": refresh_result["errors"],
-    }
+    has_successful_items = any(item.get("success") for item in refresh_result["items"])
+    status_value = "failed" if refresh_result["errors"] and not has_successful_items else "synced"
+    return _plaid_response(
+        status=status_value,
+        message=(
+            "Plaid refresh completed."
+            if status_value == "synced"
+            else "Plaid refresh completed with errors."
+        ),
+        success=refresh_result["success"] or has_successful_items,
+        items=refresh_result["items"],
+        errors=refresh_result["errors"],
+        counts={
+            "items": refresh_result["item_count"],
+            "errors": len(refresh_result["errors"]),
+        },
+        persisted=True,
+        item_count=refresh_result["item_count"],
+        steps=refresh_result["steps"],
+        # Compatibility field retained for older frontend consumers that still
+        # expect the previous refresh payload shape.
+        initial_sync_results=refresh_result.get("items", []),
+    )
 
+
+@router.get("/sync-status", response_model=PlaidSyncStatusResponse)
+async def get_plaid_sync_status(
+    current_user: dict = Depends(get_authenticated_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return whether Plaid has signaled transaction updates for any item."""
+    user_id = current_user["user_id"]
+
+    user = await get_user_by_supabase_id(db, user_id)
+
+    if not should_persist_user_data(user):
+        return _plaid_response(
+            status="no_updates",
+            message="No transaction updates available.",
+            success=True,
+            items=[],
+            errors=[],
+            counts={"items": 0, "items_with_updates": 0},
+            hasTransactionUpdates=False,
+        )
+
+    sync_status = await get_plaid_transaction_sync_status_for_user(db=db, user_id=user.id)
+    has_updates = bool(sync_status.get("hasTransactionUpdates"))
+    return _plaid_response(
+        status="updates_available" if has_updates else "no_updates",
+        message=(
+            "Transaction updates are available."
+            if has_updates
+            else "No transaction updates available."
+        ),
+        success=True,
+        items=sync_status.get("items", []),
+        errors=[],
+        counts={
+            "items": len(sync_status.get("items", [])),
+            "items_with_updates": int(has_updates),
+        },
+        hasTransactionUpdates=has_updates,
+    )
+
+
+@router.post("/transactions/sync-updates", response_model=PlaidTransactionsSyncUpdatesResponse)
+async def sync_plaid_transaction_updates(
+    current_user: dict = Depends(get_authenticated_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sync transactions only for Items that webhook-marked as updated."""
+    user_id = current_user["user_id"]
+
+    user = await get_user_by_supabase_id(db, user_id)
+
+    if not should_persist_user_data(user):
+        return _plaid_response(
+            status="no_updates",
+            message="No transaction updates available.",
+            success=True,
+            items=[],
+            errors=[],
+            counts={"items": 0, "requested": 0, "errors": 0},
+            requested=False,
+            item_count=0,
+            hasTransactionUpdates=False,
+            skipped_items=[],
+        )
+
+    token_rows = await get_plaid_token_rows_for_user(db, user.id)
+    items = []
+    errors = []
+    skipped_items = []
+    requested_count = 0
+
+    for token_row in token_rows:
+        if not token_row.item_id:
+            continue
+        if not getattr(token_row, "transactions_update_available", False):
+            skipped_items.append({
+                "item_id": token_row.item_id,
+                "institution_id": token_row.institution_id,
+                "transactions_added": 0,
+                "transactions_modified": 0,
+                "transactions_removed": 0,
+                "cursor_saved": False,
+                "webhook_expected": True,
+                "refresh_requested": False,
+                "transactions": {
+                    "added": 0,
+                    "modified": 0,
+                    "removed": 0,
+                    "cursor_saved": False,
+                    "skipped_reason": "no_updates",
+                },
+            })
+            continue
+
+        item_id = token_row.item_id
+        item_breakdown = {
+            "item_id": item_id,
+            "institution_id": token_row.institution_id,
+            "transactions_added": 0,
+            "transactions_modified": 0,
+            "transactions_removed": 0,
+            "cursor_saved": False,
+            "webhook_expected": True,
+            "refresh_requested": False,
+            "transactions": {
+                "added": 0,
+                "modified": 0,
+                "removed": 0,
+                "cursor_saved": False,
+                "skipped_reason": None,
+            },
+        }
+
+        if not plaid_item_supports_transactions(getattr(token_row, "available_products", None), getattr(token_row, "billed_products", None)):
+            item_breakdown["transactions"]["skipped_reason"] = "investment_only"
+            item_breakdown["webhook_expected"] = False
+            skipped_items.append(item_breakdown)
+            continue
+
+        token_data = parse_token_data(token_row.token_data)
+        access_token = token_data.get("access_token")
+        if not access_token:
+            item_breakdown["transactions"]["skipped_reason"] = "missing_access_token"
+            errors.append({
+                "item_id": item_id,
+                "sync_step": "transactions/sync-updates",
+                "error": "missing_access_token",
+            })
+            items.append(item_breakdown)
+            continue
+
+        try:
+            sync_result = await sync_plaid_transactions_for_item(
+                db=db,
+                user=user,
+                item_id=item_id,
+                access_token=access_token,
+                adapter=PlaidAdapter(),
+            )
+            requested_count += 1
+            tx_summary = sync_result.get("summary", {})
+            item_breakdown["transactions_added"] = tx_summary.get("added", 0)
+            item_breakdown["transactions_modified"] = tx_summary.get("modified", 0)
+            item_breakdown["transactions_removed"] = tx_summary.get("removed", 0)
+            item_breakdown["cursor_saved"] = bool(sync_result.get("next_cursor"))
+            item_breakdown["transactions"] = {
+                "added": tx_summary.get("added", 0),
+                "modified": tx_summary.get("modified", 0),
+                "removed": tx_summary.get("removed", 0),
+                "cursor_saved": bool(sync_result.get("next_cursor")),
+                "skipped_reason": None,
+            }
+        except Exception as exc:
+            errors.append({
+                "item_id": item_id,
+                "sync_step": "transactions/sync-updates",
+                "error": str(exc),
+            })
+            item_breakdown["transactions"]["skipped_reason"] = str(exc)
+
+        items.append(item_breakdown)
+
+    has_updates = any(getattr(row, "transactions_update_available", False) for row in token_rows)
+    has_already_running = any(
+        err.get("error_code") == "already_running" or err.get("error") == "already_running"
+        for err in errors
+    )
+    if has_already_running:
+        status_value = "already_running"
+    elif errors and requested_count == 0:
+        status_value = "failed"
+    elif not has_updates:
+        status_value = "no_updates"
+    else:
+        status_value = "synced"
+    return _plaid_response(
+        status=status_value,
+        message=(
+            "Transaction sync already running."
+            if status_value == "already_running"
+            else "Transaction updates synced."
+            if requested_count > 0 and not errors
+            else "No transaction updates available."
+            if not has_updates
+            else "Transaction sync completed with errors."
+        ),
+        success=len(errors) == 0 and status_value != "already_running",
+        items=items,
+        errors=errors,
+        counts={
+            "items": len(items),
+            "requested": requested_count,
+            "skipped": len(skipped_items),
+            "errors": len(errors),
+        },
+        requested=requested_count > 0,
+        item_count=len(items),
+        hasTransactionUpdates=has_updates,
+        # Compatibility field retained until all callers read the normalized
+        # items[]/errors[] envelope and stop looking for skipped_items directly.
+        skipped_items=skipped_items,
+    )
 
 
 @router.get("/identity")
@@ -1972,11 +2277,7 @@ async def get_identity(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     access_token, resolved_item_id = await get_plaid_token_for_user(
         user.id, db, item_id
@@ -2049,11 +2350,7 @@ async def get_item_status(
     """
     user_id = current_user["user_id"]
 
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = await get_user_by_supabase_id(db, user_id)
 
     access_token, resolved_item_id = await get_plaid_token_for_user(
         user.id, db, item_id
@@ -2107,86 +2404,84 @@ async def get_item_status(
 
 
 
-@router.delete("/item")
-async def remove_item(
-    item_id: str = None,
+async def _disconnect_plaid_item(
+    *,
+    item_id: str,
+    current_user: dict,
+    db: AsyncSession,
+):
+    """Soft-disconnect a Plaid Item while keeping financial history intact."""
+    user_id = current_user["user_id"]
+
+    user = await get_user_by_supabase_id(db, user_id)
+
+    token_row = await _get_plaid_token_row_for_user(user.id, db, item_id)
+    if not token_row:
+        raise HTTPException(status_code=404, detail="Plaid item not found for current user")
+
+    token_data = parse_token_data(token_row.token_data)
+    access_token = token_data.get("access_token")
+    resolved_item_id = token_row.item_id or token_data.get("item_id") or item_id
+    adapter = PlaidAdapter()
+
+    remote_disconnect_error = None
+    if access_token:
+        try:
+            await adapter.remove_item(access_token)
+        except Exception as exc:
+            remote_disconnect_error = str(exc)
+            logger.warning(
+                "Plaid item remove failed; continuing with local soft delete",
+                user_id=str(user.id),
+                item_id=resolved_item_id,
+                error=str(exc),
+            )
+
+    stmt = select(Account).where(
+        Account.user_id == user.id,
+        Account.provider == "plaid",
+        Account.item_id == resolved_item_id,
+    )
+    result = await db.execute(stmt)
+    accounts = result.scalars().all()
+
+    deactivated_count = 0
+    for account in accounts:
+        account.is_active = False
+        account.error_message = "Disconnected"
+        deactivated_count += 1
+
+    token_row.is_active = False
+
+    await db.commit()
+
+    logger.info(
+        "Plaid item disconnected",
+        user_id=str(user.id),
+        item_id=resolved_item_id,
+        accounts_deactivated=deactivated_count,
+        plaid_remote_removed=remote_disconnect_error is None,
+    )
+
+    response = {
+        "success": True,
+        "item_id": resolved_item_id,
+        "accounts_deactivated": deactivated_count,
+        "provider_token_deactivated": True,
+        "remote_disconnect_error": remote_disconnect_error,
+    }
+    return response
+
+
+@router.delete("/items/{item_id}")
+async def remove_item_by_id(
+    item_id: str,
     current_user: dict = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Disconnect a bank account (remove a Plaid Item).
-
-    This will:
-    1. Revoke the access_token on Plaid's side
-    2. Delete the provider_token row from the database
-    3. Mark all related accounts as inactive
-    4. Remove related holdings
-
-    Query params:
-        item_id: Optional. Specify which bank to disconnect.
-                 If not provided, disconnects the most recently connected bank.
-    """
-    user_id = current_user["user_id"]
-
-    stmt = select(User).where(User.supabase_user_id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    access_token, resolved_item_id = await get_plaid_token_for_user(
-        user.id, db, item_id
+    return await _disconnect_plaid_item(
+        item_id=item_id,
+        current_user=current_user,
+        db=db,
     )
-    adapter = PlaidAdapter()
 
-    try:
-        await adapter.remove_item(access_token)
-
-        stmt = select(Account).where(
-            Account.user_id == user.id,
-            Account.provider == "plaid",
-            Account.item_id == resolved_item_id,
-        )
-        result = await db.execute(stmt)
-        accounts = result.scalars().all()
-
-        deactivated_count = 0
-        for account in accounts:
-            account.is_active = False
-            account.error_message = "Disconnected"
-            deactivated_count += 1
-
-            from app.models.holding import Holding
-            await db.execute(
-                delete(Holding).where(Holding.account_id == account.id)
-            )
-
-        stmt = select(ProviderToken).where(
-            ProviderToken.user_id == user.id,
-            ProviderToken.provider == "plaid",
-            ProviderToken.item_id == resolved_item_id,
-        )
-        result = await db.execute(stmt)
-        token_row = result.scalar_one_or_none()
-        if token_row:
-            await db.delete(token_row)
-
-        await db.commit()
-
-        logger.info(
-            "Plaid item removed",
-            user_id=str(user.id),
-            item_id=resolved_item_id,
-            accounts_deactivated=deactivated_count,
-        )
-
-        return {
-            "success": True,
-            "item_id": resolved_item_id,
-            "accounts_deactivated": deactivated_count,
-        }
-
-    except Exception as e:
-        await db.rollback()
-        logger.error("Failed to remove Plaid item", error=str(e), user_id=user_id)
-        raise HTTPException(status_code=502, detail=f"Failed to remove item: {str(e)}")
