@@ -205,8 +205,13 @@ const realAuthService = {
   /**
    * Update user nickname
    */
-  async updateNickname(nickname: string): Promise<User> {
-    const { data } = await api.post<BackendUserResponse>('/auth/nickname', { nickname });
+  async updateNickname(nickname: string, dataStorageConsent?: boolean): Promise<User> {
+    const { data } = await api.post<BackendUserResponse>('/auth/nickname', {
+      nickname,
+      ...(dataStorageConsent === undefined
+        ? {}
+        : { data_storage_consent: dataStorageConsent }),
+    });
     return transformUser(data.data);
   },
 

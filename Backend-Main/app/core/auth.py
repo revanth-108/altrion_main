@@ -6,9 +6,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from app.core.config import settings
 from app.core.supabase_client import get_supabase
-import structlog
+from app.core.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 security = HTTPBearer()
 
@@ -23,7 +23,7 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(secur
     token = credentials.credentials
     
     try:
-        jwt_secret = getattr(settings, "SUPABASE_JWT_SECRET", None)
+        jwt_secret = settings.SUPABASE_JWT_SECRET
         if jwt_secret:
             # Verify JWT with Supabase secret when available
             payload = jwt.decode(

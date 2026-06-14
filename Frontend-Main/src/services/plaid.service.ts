@@ -1,60 +1,93 @@
-import api from './api';
+import { api, type ApiResponse } from './api';
+import type {
+  PlaidAccountsResponse,
+  PlaidBalancesResponse,
+  PlaidLiabilityResponse,
+  PlaidRecurringResponse,
+  PlaidRefreshResponse,
+  PlaidSyncResponse,
+  PlaidTransactionSyncStatusResponse,
+  PlaidTransactionsSyncUpdatesResponse,
+  PlaidTransactionsResponse,
+} from '@/types';
+
+export type PlaidTransactionQueryParams = {
+  start_date?: string;
+  end_date?: string;
+  account_id?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export type PlaidInvestmentTransactionParams = {
+  start_date?: string;
+  end_date?: string;
+};
 
 export const plaidService = {
   // Transactions
-  syncTransactions: (itemId?: string) =>
+  syncTransactions: (itemId?: string): Promise<ApiResponse<PlaidTransactionsResponse>> =>
     api.post('/plaid/transactions/sync', itemId ? { item_id: itemId } : {}),
 
-  getTransactions: (params?: { start_date?: string; end_date?: string; account_id?: string; limit?: number; offset?: number }) =>
+  syncTransactionUpdates: (): Promise<ApiResponse<PlaidTransactionsSyncUpdatesResponse>> =>
+    api.post('/plaid/transactions/sync-updates', {}),
+
+  getTransactionSyncStatus: (): Promise<ApiResponse<PlaidTransactionSyncStatusResponse>> =>
+    api.get('/plaid/sync-status'),
+
+  getTransactions: (params?: PlaidTransactionQueryParams): Promise<ApiResponse<PlaidTransactionsResponse>> =>
     api.get('/plaid/transactions', { params: params as Record<string, string> | undefined }),
 
-  getRecurringTransactions: () =>
+  getRecurringTransactions: (): Promise<ApiResponse<PlaidRecurringResponse>> =>
     api.get('/plaid/transactions/recurring'),
 
-  syncRecurring: () =>
+  syncRecurring: (): Promise<ApiResponse<PlaidRecurringResponse>> =>
     api.post('/plaid/transactions/recurring/sync'),
 
   // Accounts
-  getAccounts: () =>
+  getAccounts: (): Promise<ApiResponse<PlaidAccountsResponse>> =>
     api.get('/plaid/accounts'),
 
-  getBalances: () =>
+  getBalances: (): Promise<ApiResponse<PlaidBalancesResponse>> =>
     api.get('/plaid/accounts/balances'),
 
-  syncAccounts: () =>
-    api.post('/plaid/accounts/sync', {}),
+  syncAccounts: (itemId?: string): Promise<ApiResponse<PlaidBalancesResponse>> =>
+    api.post('/plaid/accounts/sync', {}, itemId ? { params: { item_id: itemId } } : {}),
 
-  refreshAllItems: () =>
+  refreshAllItems: (): Promise<ApiResponse<PlaidRefreshResponse>> =>
     api.post('/plaid/refresh', {}),
 
   // Investments
-  syncInvestments: () =>
+  syncInvestments: (): Promise<ApiResponse<PlaidSyncResponse>> =>
     api.post('/plaid/investments/sync', {}),
 
-  getHoldings: () =>
+  getHoldings: (): Promise<ApiResponse<PlaidSyncResponse>> =>
     api.get('/plaid/investments/holdings'),
 
-  getInvestmentTransactions: (params?: { start_date?: string; end_date?: string }) =>
+  getInvestmentTransactions: (params?: PlaidInvestmentTransactionParams): Promise<ApiResponse<PlaidSyncResponse>> =>
     api.post('/plaid/investments/transactions', params || {}),
 
-  syncInvestmentTransactions: () =>
+  syncInvestmentTransactions: (): Promise<ApiResponse<PlaidSyncResponse>> =>
     api.post('/plaid/investments/transactions/sync', {}),
 
   // Liabilities
-  getLiabilities: () =>
+  getLiabilities: (): Promise<ApiResponse<PlaidLiabilityResponse>> =>
     api.get('/plaid/liabilities'),
 
-  syncLiabilities: () =>
+  syncLiabilities: (): Promise<ApiResponse<PlaidLiabilityResponse>> =>
     api.post('/plaid/liabilities/sync'),
 
   // Identity
-  getIdentity: () =>
+  getIdentity: (): Promise<ApiResponse<Record<string, unknown>>> =>
     api.get('/plaid/identity'),
 
   // Item
-  getItemStatus: () =>
+  getItemStatus: (): Promise<ApiResponse<Record<string, unknown>>> =>
     api.get('/plaid/item/status'),
 
-  removeItem: (itemId: string) =>
-    api.delete(`/plaid/item`, { params: { item_id: itemId } }),
+  disconnectItem: (itemId: string): Promise<ApiResponse<PlaidSyncResponse>> =>
+    api.delete(`/plaid/items/${itemId}`),
+
+  removeItem: (itemId: string): Promise<ApiResponse<PlaidSyncResponse>> =>
+    api.delete(`/plaid/items/${itemId}`),
 };

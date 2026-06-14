@@ -1,0 +1,40 @@
+#Frontend
+npm run build
+aws s3 sync dist/ s3://altrion-frontend-prod-20260223-23069 --delete
+aws cloudfront create-invalidation --distribution-id E1WM09DA5K5XX9 --paths "/*"
+
+
+#Look for .env.local, delete that to make it a proper running app
+
+
+
+
+#backend
+
+#SSH in:
+
+chmod 400 altrion-prod-key.pem
+ssh -i altrion-prod-key.pem ubuntu@52.36.168.83
+
+#Go to backend folder:
+
+cd ~/altrion/altrion-backend
+
+#Pull latest code:
+
+git pull origin main
+
+#Rebuild and redeploy:
+
+docker compose down
+docker compose up -d --build
+
+#Check status:
+
+docker compose ps
+docker compose logs api --tail=100
+
+#Health checks:
+
+curl -i http://127.0.0.1:8000/health
+curl -i https://api.altrion.ai/health

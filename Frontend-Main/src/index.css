@@ -1,5 +1,70 @@
 @import "tailwindcss";
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700;800;900&family=Poppins:wght@200;300;400;500;600;700&display=swap');
+
+/* TT Norms Pro - Display/Heading font */
+@font-face {
+  font-family: 'TT Norms Pro';
+  src: url('/fonts/TTNormsPro-Regular.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'TT Norms Pro';
+  src: url('/fonts/TTNormsPro-Medium.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'TT Norms Pro';
+  src: url('/fonts/TTNormsPro-Bold.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'TT Norms Pro';
+  src: url('/fonts/TTNormsPro-ExtraBold.otf') format('opentype');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Sohne - Body text font */
+@font-face {
+  font-family: 'Sohne';
+  src: url('/fonts/TestSohne-Buch-BF663d89cd32e6a.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Sohne';
+  src: url('/fonts/TestSohne-Halbfett-BF663d89cd2d67b.otf') format('opentype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Sohne';
+  src: url('/fonts/TestSohne-Dreiviertelfett-BF663d89ccc5f66.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Sohne';
+  src: url('/fonts/TestSohne-Extrafett-BF663d89cc9f2c0.otf') format('opentype');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
 
 @theme {
   /* Altrion Green Palette - Enhanced for Distinctiveness */
@@ -43,8 +108,8 @@
   --color-info: #3b82f6;
 
   /* Font Families - Distinctive Typography */
-  --font-display: 'Playfair Display', Georgia, serif;
-  --font-body: 'Poppins', -apple-system, system-ui, sans-serif;
+  --font-display: 'TT Norms Pro', -apple-system, system-ui, sans-serif;
+  --font-body: 'Sohne', -apple-system, system-ui, sans-serif;
 
   /* Shadows - Depth & Elevation */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
@@ -71,6 +136,10 @@
   --spacing-32: 8rem;
 }
 
+html {
+  font-size: 110%;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -86,6 +155,102 @@ body {
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.card-shell {
+  box-shadow:
+    0 12px 36px -28px rgba(2, 6, 23, 0.72),
+    inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.section-heading__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--color-text-secondary) 78%, white 22%);
+  margin-top: 0.15rem;
+}
+
+.section-heading__eyebrow {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-size: 0.68rem;
+  line-height: 1;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.toolbar-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--color-dark-elevated) 76%, transparent 24%);
+  color: var(--color-text-secondary);
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.toolbar-icon-button:hover {
+  color: var(--color-text-primary);
+  border-color: color-mix(in srgb, var(--color-altrion-500) 24%, var(--color-dark-border) 76%);
+  background: color-mix(in srgb, var(--color-dark-elevated) 88%, transparent 12%);
+}
+
+.toolbar-icon-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.18);
+}
+
+.dashboard-nav-item {
+  position: relative;
+  border: 1px solid transparent;
+  color: var(--color-text-secondary);
+}
+
+.dashboard-nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0.55rem;
+  top: 50%;
+  height: 1rem;
+  width: 1px;
+  transform: translateY(-50%) scaleY(0);
+  transform-origin: center;
+  background: color-mix(in srgb, var(--color-altrion-400) 72%, white 28%);
+  transition: transform 160ms ease;
+}
+
+.dashboard-nav-item:hover {
+  color: var(--color-text-primary);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.dashboard-nav-item--active {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-primary);
+}
+
+.dashboard-nav-item--active::before {
+  transform: translateY(-50%) scaleY(1);
+}
+
+.dashboard-chip {
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
 }
 
 /* Light theme */
@@ -130,11 +295,22 @@ body {
   box-shadow: var(--shadow-card-hover);
 }
 
-/* Light mode header styling - Visible with shadow */
+/* Light mode header styling - Semi-transparent with blur */
 :root.light .header-nav {
-  background: rgba(255, 255, 255, 0.98);
+  background: rgba(232, 236, 242, 0.30);
   box-shadow: var(--shadow-header);
-  border-bottom-color: #e8ecf1;
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+/* Light mode sidebar backdrop - softer overlay */
+:root.light .sidebar-backdrop {
+  background: rgba(0, 0, 0, 0.15) !important;
+}
+
+/* Light mode sidebar styling - Semi-transparent with blur */
+:root.light .sidebar-nav {
+  background: rgba(232, 236, 242, 0.85);
+  border-right-color: rgba(0, 0, 0, 0.08);
 }
 
 /* Light mode footer styling */
@@ -146,6 +322,31 @@ body {
 /* Light mode elevated surfaces - Subtle distinction */
 :root.light .bg-dark-elevated {
   background: #e8ecf1;
+}
+
+:root.light .card-shell {
+  box-shadow:
+    0 18px 40px -34px rgba(15, 23, 42, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+:root.light .toolbar-icon-button {
+  border-color: rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+:root.light .toolbar-icon-button:hover {
+  border-color: rgba(16, 185, 129, 0.24);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+:root.light .dashboard-nav-item:hover {
+  background: rgba(15, 23, 42, 0.035);
+}
+
+:root.light .dashboard-nav-item--active {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(15, 23, 42, 0.08);
 }
 
 /* Light mode icon backgrounds - More vibrant green */
@@ -204,6 +405,87 @@ body {
 /* Light mode range input styling */
 :root.light input[type="range"] {
   background: #e2e8f0;
+}
+
+/* ── Worth It light-mode contrast fixes ── */
+/* Category badge text — bright -300 shades wash out on white card */
+:root.light .text-teal-300 { color: #0f766e; }
+:root.light .text-purple-300 { color: #7e22ce; }
+:root.light .text-orange-300 { color: #c2410c; }
+:root.light .text-blue-300 { color: #1d4ed8; }
+:root.light .text-emerald-300 { color: #047857; }
+:root.light .text-red-300 { color: #b91c1c; }
+
+/* CUT / KEEP drag overlays — dark backgrounds are too heavy on light cards */
+:root.light .worthit-cut-overlay {
+  background-color: rgba(254, 202, 202, 0.7) !important;
+  border-color: #dc2626 !important;
+}
+:root.light .worthit-cut-overlay .worthit-overlay-label {
+  color: #b91c1c !important;
+}
+:root.light .worthit-keep-overlay {
+  background-color: rgba(167, 243, 208, 0.7) !important;
+  border-color: #059669 !important;
+}
+:root.light .worthit-keep-overlay .worthit-overlay-label {
+  color: #047857 !important;
+}
+
+/* Hide native scrollbars (used with our custom JSX scroll indicator) */
+.scrollbar-hidden {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* ── Always-visible green scrollbar (Budget allocation log) ── */
+/* scrollbar-gutter: stable reserves the gutter even when no overflow,
+   so the green track is always visible. Combined with -webkit-appearance: none
+   to defeat macOS overlay scrollbars. */
+.scrollbar-always-green {
+  overflow-y: scroll !important;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #10b981 rgba(16, 185, 129, 0.15);
+}
+.scrollbar-always-green::-webkit-scrollbar {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 12px !important;
+  display: block !important;
+  background: rgba(16, 185, 129, 0.12);
+}
+.scrollbar-always-green::-webkit-scrollbar-track {
+  background-color: rgba(16, 185, 129, 0.12) !important;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.3);
+  margin: 2px 0;
+}
+.scrollbar-always-green::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #6ee7b7, #10b981) !important;
+  border-radius: 6px;
+  min-height: 30px;
+  border: 1px solid rgba(16, 185, 129, 0.6);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+}
+.scrollbar-always-green::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #a7f3d0, #34d399) !important;
+}
+.scrollbar-always-green::-webkit-scrollbar-corner {
+  background: transparent;
+}
+:root.light .scrollbar-always-green {
+  scrollbar-color: #059669 rgba(16, 185, 129, 0.18);
+}
+:root.light .scrollbar-always-green::-webkit-scrollbar,
+:root.light .scrollbar-always-green::-webkit-scrollbar-track {
+  background-color: rgba(16, 185, 129, 0.18) !important;
+  box-shadow: inset 0 0 0 1px rgba(5, 150, 105, 0.4);
 }
 
 :root.light input[type="range"]::-webkit-slider-runnable-track {

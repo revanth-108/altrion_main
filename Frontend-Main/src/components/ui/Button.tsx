@@ -10,6 +10,7 @@ interface ButtonProps {
   loading?: boolean;
   fullWidth?: boolean;
   type?: 'button' | 'submit';
+  className?: string;
 }
 
 export function Button({
@@ -21,6 +22,7 @@ export function Button({
   loading = false,
   fullWidth = false,
   type = 'button',
+  className = '',
 }: ButtonProps) {
   const baseStyles = 'font-semibold rounded-xl transition-all duration-200 flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-dark-bg';
 
@@ -49,6 +51,7 @@ export function Button({
         ${sizes[size]}
         ${fullWidth ? 'w-full' : ''}
         ${disabled || loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+        ${className}
       `}
     >
       {loading ? (

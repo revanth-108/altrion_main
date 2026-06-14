@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import logoImage from '../../assets/logo.png';
-import logoIconImage from '../../assets/logo_2.png';
+import logoImage from "../../assets/justlogo'd.png";
+import logoIconImage from "../../assets/justlogo'd.png";
 import { ROUTES } from '../../constants';
 import { useAuthStore, selectIsAuthenticated } from '../../store';
 
@@ -17,9 +17,9 @@ export function Logo({ size = 'md', showText = true, variant = 'full', clickable
   const isAuthenticated = useAuthStore(selectIsAuthenticated);
 
   const sizes = {
-    sm: { icon: 40, text: 'text-lg' },
+    sm: { icon: 28, text: 'text-lg' },
     md: { icon: 56, text: 'text-xl' },
-    lg: { icon: 80, text: 'text-3xl' },
+    lg: { icon: 160, text: 'text-3xl' },
   };
 
   const logoSrc = variant === 'icon' ? logoIconImage : logoImage;

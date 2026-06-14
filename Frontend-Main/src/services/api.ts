@@ -9,13 +9,15 @@ export class ApiError extends Error {
   status: number;
   statusText: string;
   data?: unknown;
+  url?: string;
 
-  constructor(status: number, statusText: string, data?: unknown) {
+  constructor(status: number, statusText: string, data?: unknown, url?: string) {
     super(`API Error: ${status} ${statusText}`);
     this.name = 'ApiError';
     this.status = status;
     this.statusText = statusText;
     this.data = data;
+    this.url = url;
   }
 }
 
@@ -31,7 +33,7 @@ interface RequestConfig extends RequestInit {
   timeout?: number;
 }
 
-interface ApiResponse<T> {
+export interface ApiResponse<T> {
   data: T;
   status: number;
   headers: Headers;
@@ -77,7 +79,7 @@ const responseInterceptor = async <T>(response: Response): Promise<ApiResponse<T
     } catch {
       errorData = null;
     }
-    throw new ApiError(response.status, response.statusText, errorData);
+    throw new ApiError(response.status, response.statusText, errorData, response.url);
   }
 
   const data = await response.json();
@@ -152,6 +154,26 @@ export const api = {
       body: body ? JSON.stringify(body) : undefined,
     });
     const response = await fetchWithTimeout(url, finalConfig);
+    return responseInterceptor<T>(response);
+  },
+
+  async postForm<T>(
+    endpoint: string,
+    body: FormData,
+    config: RequestConfig = {},
+  ): Promise<ApiResponse<T>> {
+    const url = buildUrl(endpoint, config.params);
+    const headers = new Headers(config.headers);
+    const token = getAuthToken();
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+    const response = await fetchWithTimeout(url, {
+      ...config,
+      method: 'POST',
+      headers,
+      body,
+    });
     return responseInterceptor<T>(response);
   },
 

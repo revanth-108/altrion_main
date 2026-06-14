@@ -7,8 +7,6 @@ interface AuthState {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
-  isLoading: boolean;
-  error: string | null;
   hasCompletedOnboarding: boolean;
   justSignedUp: boolean;
 }
@@ -16,13 +14,11 @@ interface AuthState {
 interface AuthActions {
   setUser: (user: User | null) => void;
   setToken: (token: string | null) => void;
-  setLoading: (loading: boolean) => void;
-  setError: (error: string | null) => void;
   login: (user: User, token: string) => void;
   logout: () => void;
-  clearError: () => void;
   completeOnboarding: () => void;
   setJustSignedUp: (value: boolean) => void;
+  updateUser: (updates: Partial<User>) => void;
 }
 
 type AuthStore = AuthState & AuthActions;
@@ -31,8 +27,6 @@ const initialState: AuthState = {
   user: null,
   token: null,
   isAuthenticated: false,
-  isLoading: false,
-  error: null,
   hasCompletedOnboarding: false,
   justSignedUp: false,
 };
@@ -53,22 +47,11 @@ export const useAuthStore = create<AuthStore>()(
           state.token = token;
         }),
 
-      setLoading: (loading) =>
-        set((state) => {
-          state.isLoading = loading;
-        }),
-
-      setError: (error) =>
-        set((state) => {
-          state.error = error;
-        }),
-
       login: (user, token) =>
         set((state) => {
           state.user = user;
           state.token = token;
           state.isAuthenticated = true;
-          state.error = null;
         }),
 
       logout: () =>
@@ -76,14 +59,8 @@ export const useAuthStore = create<AuthStore>()(
           state.user = null;
           state.token = null;
           state.isAuthenticated = false;
-          state.error = null;
           state.hasCompletedOnboarding = false;
           state.justSignedUp = false;
-        }),
-
-      clearError: () =>
-        set((state) => {
-          state.error = null;
         }),
 
       completeOnboarding: () =>
@@ -94,6 +71,14 @@ export const useAuthStore = create<AuthStore>()(
       setJustSignedUp: (value) =>
         set((state) => {
           state.justSignedUp = value;
+        }),
+
+      updateUser: (updates) =>
+        set((state) => {
+          if (state.user) {
+            Object.assign(state.user, updates);
+            state.user.updatedAt = new Date().toISOString();
+          }
         }),
     })),
     {
@@ -112,5 +97,3 @@ export const useAuthStore = create<AuthStore>()(
 // Selectors for optimized re-renders
 export const selectUser = (state: AuthStore) => state.user;
 export const selectIsAuthenticated = (state: AuthStore) => state.isAuthenticated;
-export const selectIsLoading = (state: AuthStore) => state.isLoading;
-export const selectError = (state: AuthStore) => state.error;

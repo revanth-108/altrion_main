@@ -32,6 +32,46 @@ export function ProtectedRoute({
   return <>{children}</>;
 }
 
+interface UserOnlyRouteProps {
+  children: ReactNode;
+}
+
+/**
+ * User-only Route wrapper that blocks unauthenticated users from customer routes
+ */
+export function UserOnlyRoute({
+  children,
+}: UserOnlyRouteProps) {
+  const isAuthenticated        = useAuthStore(selectIsAuthenticated);
+  const justSignedUp           = useAuthStore((s) => s.justSignedUp);
+  const hasCompletedOnboarding = useAuthStore((s) => s.hasCompletedOnboarding);
+  const location               = useLocation();
+  const isOAuthReturn          = window.location.href.includes('oauth_state_id');
+
+  if (!isAuthenticated && !isOAuthReturn) {
+    return (
+      <Navigate
+        to={ROUTES.LOGIN}
+        state={{ from: location.pathname }}
+        replace
+      />
+    );
+  }
+
+  // If the user just signed up and hasn't finished onboarding, keep them in the
+  // onboarding flow — they shouldn't be able to reach the dashboard or connect
+  // pages by typing a URL directly.
+  const isOnboardingPath =
+    location.pathname.startsWith('/onboarding') ||
+    location.pathname.startsWith('/connect');
+
+  if (justSignedUp && !hasCompletedOnboarding && !isOnboardingPath) {
+    return <Navigate to={ROUTES.ONBOARDING} replace />;
+  }
+
+  return <>{children}</>;
+}
+
 interface PublicOnlyRouteProps {
   children: ReactNode;
   redirectTo?: string;

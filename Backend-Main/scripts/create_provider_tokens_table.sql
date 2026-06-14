@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS provider_tokens (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     provider VARCHAR(50) NOT NULL,
     token_data JSONB NOT NULL,  -- Encrypted by Supabase Vault
+    institution_id VARCHAR(50),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(user_id, provider)
@@ -14,6 +15,7 @@ CREATE TABLE IF NOT EXISTS provider_tokens (
 -- Create index for faster lookups
 CREATE INDEX IF NOT EXISTS idx_provider_tokens_user_id ON provider_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_provider_tokens_provider ON provider_tokens(provider);
+CREATE INDEX IF NOT EXISTS idx_provider_tokens_institution_id ON provider_tokens(institution_id);
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE provider_tokens ENABLE ROW LEVEL SECURITY;

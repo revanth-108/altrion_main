@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { platformService, type ConnectionResult } from '@/services';
 import type { PlatformCredentials } from '@/schemas';
+import type { ConnectedAccount } from '@/types';
 
 export const platformKeys = {
   all: ['platforms'] as const,
@@ -17,7 +18,7 @@ export function usePlatforms() {
 }
 
 export function useConnectedPlatforms() {
-  return useQuery({
+  return useQuery<ConnectedAccount[]>({
     queryKey: platformKeys.connected(),
     queryFn: () => platformService.getConnectedPlatforms(),
     staleTime: 30 * 1000, // 30 seconds

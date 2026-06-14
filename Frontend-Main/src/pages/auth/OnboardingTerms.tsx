@@ -1,10 +1,12 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, ShieldCheck, FileCheck } from 'lucide-react';
-import { Button, Logo } from '../../components/ui';
+import { ArrowRight, ShieldCheck, FileCheck, Database, Trash2 } from 'lucide-react';
+import { Button } from '../../components/ui';
+import { OnboardingHeader } from '../../components/onboarding';
+import { useAuthStore, selectUser } from '../../store';
+import { authService } from '../../services';
 import { ROUTES } from '../../constants';
-import { authService } from '@/services';
 
 const TERMS_SECTIONS = [
   {
@@ -60,7 +62,7 @@ e) Data Retention: You may delete your account at any time from the Profile page
 
 • Plaid Technologies: Handles bank account authentication and data aggregation. Plaid's Privacy Policy and End User Privacy Policy govern the data you share with Plaid during the connection process.
 • Supabase: Provides the underlying database and file storage infrastructure. Data is hosted on servers located in the United States.
-• Stripe: Processes subscription payments. Altrion does not store your payment card details; all billing data is handled directly by Stripe.
+• Bank of America Secure Acceptance: Processes subscription payments. Altrion does not store your payment card details; billing data is handled by the hosted payment page.
 • WalletConnect: Optional integration for connecting cryptocurrency wallets via QR code. Only your public wallet address is shared with Altrion.
 
 By using Altrion, you also agree to be bound by the applicable terms of these third-party providers insofar as they relate to your use of their services through Altrion.`,
@@ -108,24 +110,34 @@ Last updated: June 2025`,
 
 export function OnboardingTerms() {
   const navigate = useNavigate();
+  const user = useAuthStore(selectUser);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const [agreed, setAgreed] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [readProgress, setReadProgress] = useState(0);
+
+  const handleDocScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const scrollable = el.scrollHeight - el.clientHeight;
+    if (scrollable <= 0) return;
+    setReadProgress(Math.round(Math.min(1, el.scrollTop / scrollable) * 100));
+  }, []);
 
   const handleProceed = async () => {
-    if (!agreed) {
-      return;
-    }
-
+    setSubmitError('');
     setIsSubmitting(true);
     try {
-      await authService.updateProfile({ data_storage_consent: true });
-      // Small artificial delay for UX polish
-      await new Promise(r => setTimeout(r, 600));
+      await authService.updateNickname(
+        user?.displayName || user?.nickname || user?.name || 'Altrion user',
+        true,
+      );
+      sessionStorage.setItem('altrion:onboardingFlow', 'true');
       navigate(ROUTES.CONNECT_SELECT);
-    } catch (error) {
-      console.error('Failed to record data storage consent', error);
+    } catch (submitError) {
+      console.error('Failed to save data consent', submitError);
+      setSubmitError('We could not save your consent. Please try again.');
       setIsSubmitting(false);
     }
   };
@@ -133,22 +145,10 @@ export function OnboardingTerms() {
   const canProceed = agreed;
 
   return (
-    <div className="min-h-screen bg-dark-bg flex flex-col">
-      {/* Header with progress */}
-      <div className="p-6 border-b border-dark-border bg-dark-surface/50 backdrop-blur-sm">
-        <div className="max-w-3xl mx-auto">
-          <div className="flex items-center justify-between mb-4">
-            <Logo size="sm" />
-            <span className="text-sm text-text-muted">Step 6 of 6 · Terms & Conditions</span>
-          </div>
-          <div className="progress-bar">
-            <div className="progress-bar-fill" style={{ width: '100%' }} />
-          </div>
-        </div>
-      </div>
+    <div className="flex min-h-screen flex-col bg-dark-bg">
+      <OnboardingHeader currentStep={3} />
 
-      {/* Content */}
-      <div className="flex-1 flex items-start justify-center p-6 py-10">
+      <div className="flex flex-1 items-start justify-center px-5 py-10 sm:px-8">
         <div className="w-full max-w-3xl">
 
           {/* Page heading */}
@@ -156,23 +156,62 @@ export function OnboardingTerms() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
-            className="mb-6"
+            className="mb-7"
           >
-            <div className="flex items-center gap-3 mb-2">
-              <div className="w-10 h-10 rounded-xl bg-altrion-500/10 flex items-center justify-center">
-                <FileCheck size={20} className="text-altrion-400" />
-              </div>
-              <h1 className="font-display text-3xl font-bold text-text-primary tracking-tight">
-                Terms &amp; Conditions
-              </h1>
-            </div>
-            <p className="text-text-secondary text-sm leading-relaxed">
-              Please read these terms carefully before proceeding. By continuing you confirm you have read and understood
-              Altrion's terms and agree to how we collect, store, and protect your data.
+            <span className="inline-flex items-center gap-2 rounded-full border border-altrion-500/30 bg-altrion-500/10 px-3 py-1 text-xs font-semibold text-altrion-400">
+              <FileCheck size={12} />
+              Step 3 of 5 · Data Consent
+            </span>
+            <h1 className="mt-4 font-display text-3xl font-bold tracking-tight text-text-primary sm:text-4xl">
+              Before we proceed
+            </h1>
+            <p className="mt-3 text-sm leading-relaxed text-text-secondary">
+              We believe in radical transparency. Here's exactly what you're agreeing to — no legalese.
             </p>
           </motion.div>
 
-          {/* T&C document — white PDF-viewer style */}
+          {/* Key commitments — 3-up summary */}
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.07 }}
+            className="mb-6 grid gap-3 sm:grid-cols-3"
+          >
+            {[
+              {
+                icon: Database,
+                title: 'What we collect',
+                body: 'Account balances, transactions, and holdings via read-only bank connections. No passwords — ever.',
+              },
+              {
+                icon: ShieldCheck,
+                title: 'How it\'s protected',
+                body: 'AES-256 encryption at rest, TLS 1.2+ in transit. Your data is never sold to third parties.',
+              },
+              {
+                icon: Trash2,
+                title: 'Your control',
+                body: 'Delete your account and all data at any time from Profile settings. No questions asked.',
+              },
+            ].map(({ icon: Icon, title, body }, i) => (
+              <motion.div
+                key={title}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.35, delay: 0.12 + i * 0.07 }}
+                className="relative overflow-hidden rounded-xl border border-dark-border bg-dark-card p-4"
+              >
+                <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-altrion-500/30 to-transparent" />
+                <div className="mb-3 flex h-8 w-8 items-center justify-center rounded-lg bg-altrion-500/10">
+                  <Icon size={15} className="text-altrion-400" />
+                </div>
+                <p className="mb-1 text-sm font-semibold text-text-primary">{title}</p>
+                <p className="text-xs leading-5 text-text-muted">{body}</p>
+              </motion.div>
+            ))}
+          </motion.div>
+
+          {/* T&C document */}
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -180,47 +219,83 @@ export function OnboardingTerms() {
           >
             <div
               ref={scrollRef}
-              className="rounded-2xl overflow-hidden border border-dark-border shadow-2xl"
-              style={{ maxHeight: '520px' }}
+              className="overflow-hidden rounded-2xl border border-dark-border bg-dark-surface shadow-[0_20px_60px_-16px_rgba(0,0,0,0.5)]"
             >
-              {/* Document chrome bar */}
-              <div className="bg-[#e8e8e8] border-b border-[#d0d0d0] px-5 py-2.5 flex items-center gap-2">
-                <div className="flex gap-1.5">
-                  <div className="w-3 h-3 rounded-full bg-[#ff5f57]" />
-                  <div className="w-3 h-3 rounded-full bg-[#febc2e]" />
-                  <div className="w-3 h-3 rounded-full bg-[#28c840]" />
+              {/* Document header */}
+              <div className="border-b border-dark-border bg-dark-elevated/60 px-6 py-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <FileCheck size={15} className="flex-none text-altrion-400" />
+                    <span className="text-sm font-semibold text-text-primary">
+                      Terms &amp; Conditions
+                    </span>
+                    <span className="rounded-full border border-dark-border bg-dark-elevated px-2 py-0.5 text-[10px] text-text-muted">
+                      v1.0 · June 2025
+                    </span>
+                  </div>
+
+                  {readProgress > 0 ? (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="flex items-center gap-2"
+                    >
+                      <div className="h-1 w-20 overflow-hidden rounded-full bg-dark-border">
+                        <motion.div
+                          className="h-full origin-left bg-gradient-to-r from-altrion-600 to-altrion-400"
+                          animate={{ scaleX: readProgress / 100 }}
+                          transition={{ duration: 0.15 }}
+                        />
+                      </div>
+                      <span className="text-[11px] tabular-nums text-text-muted">
+                        {readProgress}%
+                      </span>
+                    </motion.div>
+                  ) : (
+                    <span className="text-[11px] text-text-muted">Scroll to read</span>
+                  )}
                 </div>
-                <span className="ml-3 text-xs text-[#555] font-medium select-none">
-                  Altrion.ai — Terms and Conditions.pdf
-                </span>
               </div>
 
               {/* Document body */}
               <div
-                className="overflow-y-auto bg-white"
-                style={{ maxHeight: '472px' }}
+                className="overflow-y-auto"
+                style={{ maxHeight: '460px' }}
+                onScroll={handleDocScroll}
               >
-                <div className="px-10 py-10 max-w-2xl mx-auto">
-                  {/* Document title */}
-                  <div className="text-center mb-8 pb-6 border-b border-gray-200">
-                    <h2 className="text-2xl font-bold text-gray-900 mb-1">Altrion.ai</h2>
-                    <h3 className="text-lg font-semibold text-gray-700 mb-2">Terms and Conditions</h3>
-                    <p className="text-sm text-gray-500">Effective Date: June 1, 2025 · Version 1.0</p>
+                <div className="px-8 py-8">
+                  {/* Document title block */}
+                  <div className="mb-8 pb-6 border-b border-dark-border">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest text-altrion-400 mb-2">
+                      Legal Agreement
+                    </p>
+                    <h2 className="font-display text-xl font-bold text-text-primary">
+                      Altrion.ai — Terms and Conditions
+                    </h2>
+                    <p className="mt-1.5 text-xs text-text-muted">
+                      Effective Date: June 1, 2025 &nbsp;·&nbsp; Version 1.0
+                    </p>
                   </div>
 
                   {/* Sections */}
-                  <div className="space-y-7">
+                  <div className="space-y-8">
                     {TERMS_SECTIONS.map(({ title, body }) => (
                       <section key={title}>
-                        <h4 className="text-sm font-bold text-gray-900 mb-2">{title}</h4>
-                        <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{body}</p>
+                        <div className="mb-3 flex items-center gap-3">
+                          <div className="h-3.5 w-0.5 flex-none rounded-full bg-altrion-500" aria-hidden />
+                          <h4 className="text-sm font-semibold text-text-primary">{title}</h4>
+                        </div>
+                        <p className="pl-3.5 text-sm leading-[1.8] text-text-secondary whitespace-pre-line">
+                          {body}
+                        </p>
                       </section>
                     ))}
                   </div>
 
-                  {/* Footer */}
-                  <div className="mt-10 pt-6 border-t border-gray-200 text-center">
-                    <p className="text-xs text-gray-400">© 2025 Altrion.ai, Inc. All rights reserved.</p>
+                  <div className="mt-10 border-t border-dark-border pt-6 text-center">
+                    <p className="text-xs text-text-muted">
+                      © 2025 Altrion.ai, Inc. All rights reserved.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -234,17 +309,16 @@ export function OnboardingTerms() {
             transition={{ duration: 0.4, delay: 0.2 }}
             className="mt-6 space-y-5"
           >
-            {/* Security badge */}
-            <div className="flex items-center gap-3 bg-altrion-500/5 border border-altrion-500/20 rounded-xl p-4">
-              <ShieldCheck size={20} className="text-altrion-400 flex-shrink-0" />
-              <p className="text-sm text-text-secondary">
-                By accepting these terms you agree to Altrion.ai's data collection, storage, and processing practices as
-                described above. Your data is encrypted and never sold to third parties.
+            {/* Compact consent note */}
+            <div className="flex items-center gap-2.5 rounded-xl border border-altrion-500/20 bg-altrion-500/5 px-4 py-3">
+              <ShieldCheck size={15} className="flex-none text-altrion-400" />
+              <p className="text-xs leading-5 text-text-secondary">
+                By checking the box below you confirm you've read the full terms and agree to Altrion's data practices.
               </p>
             </div>
 
             {/* Checkbox */}
-            <label className="flex items-start gap-3 cursor-pointer group">
+            <label className="group flex cursor-pointer items-start gap-3">
               <div className="relative mt-0.5 flex-shrink-0">
                 <input
                   type="checkbox"
@@ -254,10 +328,10 @@ export function OnboardingTerms() {
                   className="sr-only"
                 />
                 <div
-                  onClick={() => setAgreed(v => !v)}
-                  className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all cursor-pointer
+                  aria-hidden="true"
+                  className={`flex h-5 w-5 items-center justify-center rounded border-2 transition-all
                     ${agreed
-                      ? 'bg-altrion-500 border-altrion-500'
+                      ? 'border-altrion-500 bg-altrion-500'
                       : 'border-dark-border bg-dark-card group-hover:border-altrion-500/50'
                     }`}
                 >
@@ -266,7 +340,7 @@ export function OnboardingTerms() {
                       initial={{ scale: 0, opacity: 0 }}
                       animate={{ scale: 1, opacity: 1 }}
                       viewBox="0 0 12 10"
-                      className="w-3 h-3"
+                      className="h-3 w-3"
                     >
                       <polyline
                         points="1.5 5.5 4.5 8.5 10.5 1.5"
@@ -280,14 +354,23 @@ export function OnboardingTerms() {
                   )}
                 </div>
               </div>
-              <span className="text-sm text-text-secondary leading-relaxed">
+              <span className="text-sm leading-relaxed text-text-secondary">
                 I have read and agree to Altrion.ai's{' '}
-                <span className="text-altrion-400 font-medium">Terms and Conditions</span>{' '}
+                <span className="font-medium text-altrion-400">Terms and Conditions</span>{' '}
                 and{' '}
-                <span className="text-altrion-400 font-medium">Privacy Policy</span>.
+                <span className="font-medium text-altrion-400">Privacy Policy</span>.
                 I understand how my financial data is collected, stored, and used.
               </span>
             </label>
+
+            {submitError && (
+              <div
+                role="alert"
+                className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
+              >
+                {submitError}
+              </div>
+            )}
           </motion.div>
 
           {/* Action row */}
@@ -295,12 +378,12 @@ export function OnboardingTerms() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4, delay: 0.3 }}
-            className="flex items-center justify-between mt-8"
+            className="mt-8 flex items-center justify-between"
           >
             <button
               type="button"
-              onClick={() => navigate(ROUTES.ONBOARDING_UPLOAD)}
-              className="text-sm text-text-muted hover:text-text-primary transition-colors underline-offset-2 hover:underline"
+              onClick={() => navigate(ROUTES.ONBOARDING_DETAILS)}
+              className="text-sm text-text-muted underline-offset-2 transition-colors hover:text-text-primary hover:underline"
             >
               ← Back
             </button>
@@ -311,7 +394,7 @@ export function OnboardingTerms() {
               disabled={!canProceed || isSubmitting}
               loading={isSubmitting}
             >
-              {isSubmitting ? 'Confirming…' : 'Proceed to Connect Accounts'}
+              {isSubmitting ? 'Confirming…' : 'Continue to bank connection'}
               {!isSubmitting && <ArrowRight size={18} />}
             </Button>
           </motion.div>

@@ -211,6 +211,11 @@ class PlaidAdapter(BaseProviderAdapter):
                 country_codes=[CountryCode("US")],
                 language="en",
             )
+            webhook_url = getattr(settings, "PLAID_WEBHOOK_URL", "").strip()
+            if not webhook_url:
+                webhook_url = f"{settings.API_BASE_URL.rstrip('/')}/webhooks/plaid"
+            if webhook_url:
+                link_token_kwargs["webhook"] = webhook_url
             if redirect_uri is not None:
                 link_token_kwargs["redirect_uri"] = redirect_uri
 
@@ -554,6 +559,47 @@ class PlaidAdapter(BaseProviderAdapter):
 
         except Exception as e:
             logger.error("Failed to sync Plaid transactions", error=str(e))
+            raise
+
+    async def refresh_transactions(self, access_token: str) -> dict:
+        """
+        Request Plaid to re-check transactions for an Item.
+
+        This is a request-only operation. Plaid will later emit a
+        SYNC_UPDATES_AVAILABLE webhook if updates exist.
+        """
+        try:
+            import httpx
+
+            env = settings.PLAID_ENVIRONMENT.lower()
+            if env == "production":
+                base_url = "https://production.plaid.com"
+            elif env == "development":
+                base_url = "https://development.plaid.com"
+            else:
+                base_url = "https://sandbox.plaid.com"
+
+            payload = {
+                "client_id": settings.PLAID_CLIENT_ID,
+                "secret": settings.PLAID_SECRET,
+                "access_token": access_token,
+            }
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{base_url}/transactions/refresh",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+
+            return {
+                "requested": True,
+                "response": normalize_plaid_value(response.json()),
+            }
+        except Exception as e:
+            logger.error("Failed to request Plaid transactions refresh", error=str(e))
             raise
 
     async def get_recurring_transactions(

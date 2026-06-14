@@ -32,7 +32,7 @@ export const platformService = {
   async getPlatforms(): Promise<{ crypto: Platform[]; banks: Platform[]; brokers: Platform[] }> {
     try {
       const { data } = await api.get<BackendPlatform[]>('/platforms');
-      
+
       const platforms: Platform[] = data.map((platform) => ({
         id: platform.id,
         name: platform.name,
@@ -87,7 +87,7 @@ export const platformService = {
         `/platforms/${platformId}/connect`,
         { credentials }
       );
-      
+
       return {
         platformId: data.platform_id,
         status: data.status as ConnectionStatus,
@@ -145,6 +145,22 @@ export const platformService = {
     return data;
   },
 
+  async uploadPortfolioStatement(
+    exchangeName: string,
+    file: File,
+  ): Promise<{ success: boolean; file_name: string; file_path: string; holdings_parsed: number }> {
+    const formData = new FormData();
+    formData.append('exchange_name', exchangeName);
+    formData.append('file', file);
+    const { data } = await api.postForm<{
+      success: boolean;
+      file_name: string;
+      file_path: string;
+      holdings_parsed: number;
+    }>('/platforms/statements/upload', formData, { timeout: 90000 });
+    return data;
+  },
+
 
   /**
    * Connect to a platform using API keys
@@ -161,7 +177,7 @@ export const platformService = {
           api_secret: apiCredentials.apiSecret,
         }
       );
-      
+
       return {
         platformId: data.platform_id,
         status: data.status as ConnectionStatus,
@@ -217,7 +233,7 @@ export const platformService = {
           error_message: string | null;
         }>;
       }>>('/platforms/connected');
-      
+
       // Transform to frontend format
       const platforms: ConnectedAccount[] = [];
       data.forEach((item) => {
@@ -246,7 +262,7 @@ export const platformService = {
           });
         });
       });
-      
+
       return platforms;
     } catch (error) {
       console.error('Failed to fetch connected platforms:', error);
@@ -263,7 +279,7 @@ export const platformService = {
     // return data;
 
     await simulateDelay(500);
-    
+
     return {
       platformId,
       status: 'success',
@@ -281,7 +297,7 @@ export const platformService = {
     // return data;
 
     await simulateDelay(2000);
-    
+
     return {
       syncedAt: new Date().toISOString(),
     };

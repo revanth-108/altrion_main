@@ -9,7 +9,7 @@ export function Footer() {
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
           {/* Logo */}
           <div className="flex-shrink-0 opacity-60 hover:opacity-100 transition-opacity -my-1">
-            <Logo size="lg" variant="full" showText={false} />
+            <Logo size="md" variant="full" showText={false} />
           </div>
 
           {/* Copyright */}

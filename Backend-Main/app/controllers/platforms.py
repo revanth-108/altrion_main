@@ -2,13 +2,15 @@
 Platform connection endpoints
 """
 import inspect
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+import re
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid import UUID
 from app.core.database import get_db
 from app.core.auth import get_current_user as get_authenticated_user
-from app.core.supabase_client import store_encrypted_token, delete_encrypted_token
+from app.core.supabase_client import delete_encrypted_token, get_supabase, store_encrypted_token
 from app.schemas.platform import ConnectionRequest, ConnectionResponse, PlatformResponse
 from app.models.account import Account
 from app.services.providers.coinbase import CoinbaseAdapter
@@ -30,8 +32,8 @@ from app.services.plaid_sync import (
     is_liability_account,
     positive_debt_amount,
 )
-from app.services import plaid_persist
 from app.services.data_consent import should_persist_user_data
+from app.services.pdf_statement_parser import parse_and_store_statement
 from app.services.plaid_safe import parse_token_data
 
 logger = get_logger()
@@ -117,6 +119,85 @@ async def get_platforms():
     return [PlatformResponse(**platform) for platform in PLATFORMS.values()]
 
 
+@router.post("/statements/upload")
+async def upload_portfolio_statement(
+    exchange_name: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_authenticated_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload and parse a PDF portfolio statement."""
+    user = await get_user_by_supabase_id(db, current_user["user_id"])
+
+    if not should_persist_user_data(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Data storage consent is required before uploading statements.",
+        )
+
+    normalized_exchange = exchange_name.strip()
+    if not normalized_exchange:
+        raise HTTPException(status_code=400, detail="Exchange or brokerage name is required.")
+
+    filename = file.filename or "statement.pdf"
+    if file.content_type != "application/pdf" and not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF statements are supported.")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="The uploaded PDF is empty.")
+    if len(contents) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="PDF files must be 10 MB or smaller.")
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._") or "statement.pdf"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    file_path = f"{user.id}/{timestamp}_{uuid4().hex[:8]}_{safe_name}"
+
+    try:
+        supabase = get_supabase()
+        supabase.storage.from_("crypto-statements").upload(
+            file_path,
+            contents,
+            {"content-type": "application/pdf", "upsert": "false"},
+        )
+        supabase.table("crypto_uploads").insert({
+            "user_id": str(user.id),
+            "exchange_name": normalized_exchange,
+            "file_name": filename,
+            "file_path": file_path,
+        }).execute()
+        logger.info("pdf_supabase_stored", exchange=normalized_exchange, file_path=file_path)
+    except Exception as exc:
+        logger.warning(
+            "pdf_supabase_store_failed_continuing",
+            user_id=str(user.id),
+            file_name=filename,
+            error=str(exc),
+        )
+        file_path = ""
+
+    holdings_parsed = 0
+    try:
+        holdings_parsed = await parse_and_store_statement(
+            db,
+            user,
+            normalized_exchange,
+            contents,
+        )
+    except Exception as exc:
+        logger.error("pdf_statement_parse_failed", exchange=normalized_exchange, error=str(exc))
+
+    if holdings_parsed == 0:
+        logger.warning("pdf_no_holdings_stored", exchange=normalized_exchange)
+
+    return {
+        "success": True,
+        "file_name": filename,
+        "file_path": file_path,
+        "holdings_parsed": holdings_parsed,
+    }
+
+
 @router.post("/{platform_id}/connect", response_model=ConnectionResponse)
 async def connect_platform(
     platform_id: str,
@@ -179,23 +260,13 @@ async def connect_platform(
         # Create account records
         created_accounts = []
         for account_data in accounts:
-            # Check if account already exists
-            if platform_id == "plaid":
-                existing = await plaid_persist.find_existing_plaid_account(
-                    db=db,
-                    user_id=user.id,
-                    item_id=token_data.get("item_id"),
-                    provider_account_id=account_data["id"],
-                )
-            else:
-                stmt = select(Account).where(
-                    Account.user_id == user.id,
-                    Account.provider == platform_id,
-                    Account.provider_account_id == account_data["id"],
-                )
-                result = await db.execute(stmt)
-                existing = result.scalar_one_or_none()
-            
+            stmt = select(Account).where(
+                Account.user_id == user.id,
+                Account.provider == platform_id,
+                Account.provider_account_id == account_data["id"],
+            )
+            result = await db.execute(stmt)
+            existing = result.scalar_one_or_none()
             if existing:
                 existing.is_active = True
                 existing.error_message = None

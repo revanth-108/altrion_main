@@ -40,7 +40,25 @@ class Holding(Base):
     
     # Quantity with full precision
     quantity = Column(Numeric(36, 18), nullable=False)  # Full precision decimal
-    
+
+    # Original purchase price per share/unit.
+    # Used for gain/loss calculation on investment holdings.
+    # Null for non-investment holdings (cash, crypto).
+    cost_basis = Column(Numeric(20, 8), nullable=True)
+
+    # Plaid's stable security identifier.
+    # References the securities[] array returned by /investments/holdings/get.
+    # Null for non-investment holdings.
+    security_id = Column(String(255), nullable=True, index=True)
+
+    # Price per share as reported by the institution at sync time.
+    # From Plaid's holding.institution_price field.
+    institution_price = Column(Numeric(20, 8), nullable=True)
+
+    # Total holding value (quantity × institution_price) at sync time.
+    # From Plaid's holding.institution_value field.
+    institution_value = Column(Numeric(20, 8), nullable=True)
+
     # Source tracking
     source = Column(String(50), nullable=False)  # 'coinbase', 'plaid', 'wallet'
     

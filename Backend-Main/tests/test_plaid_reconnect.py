@@ -86,8 +86,28 @@ async def test_exchange_token_replaces_old_item_and_activates_new_item(monkeypat
         old_token.is_active = False
         return 1
 
-    async def _fake_find_existing_plaid_account(**_kwargs):
-        return None
+    async def _fake_upsert_plaid_account(**_kwargs):
+        account = SimpleNamespace(
+            id=uuid4(),
+            item_id=_kwargs["item_id"],
+            is_active=True,
+            error_message=None,
+            provider_account_id=_kwargs["provider_account_id"],
+            name=_kwargs["pa"].get("name"),
+            account_type=_kwargs["pa"].get("type"),
+            subtype=_kwargs["pa"].get("subtype"),
+            mask=_kwargs["pa"].get("mask"),
+        )
+        added_objects.append(account)
+        return account, "inserted"
+
+    async def _fake_upsert_plaid_provider_token(**_kwargs):
+        added_objects.append(SimpleNamespace(
+            token_data={"access_token": _kwargs["access_token"]},
+            item_id=_kwargs["item_id"],
+            is_active=True,
+        ))
+        return uuid4()
 
     async def _fake_upsert_item_status(**_kwargs):
         return None
@@ -100,7 +120,8 @@ async def test_exchange_token_replaces_old_item_and_activates_new_item(monkeypat
     monkeypatch.setattr("app.controllers.plaid.get_active_plaid_item_ids_for_institution", _fake_get_active_plaid_item_ids_for_institution)
     monkeypatch.setattr("app.controllers.plaid.deactivate_plaid_accounts_for_item_ids", _fake_deactivate_accounts)
     monkeypatch.setattr("app.controllers.plaid.deactivate_plaid_provider_tokens_for_item_ids", _fake_deactivate_tokens)
-    monkeypatch.setattr("app.controllers.plaid.plaid_persist.find_existing_plaid_account", _fake_find_existing_plaid_account)
+    monkeypatch.setattr("app.controllers.plaid.plaid_persist.upsert_plaid_account", _fake_upsert_plaid_account)
+    monkeypatch.setattr("app.controllers.plaid.plaid_persist.upsert_plaid_provider_token", _fake_upsert_plaid_provider_token)
     monkeypatch.setattr("app.controllers.plaid.plaid_persist.upsert_item_status", _fake_upsert_item_status)
     monkeypatch.setattr("app.controllers.plaid.sync_plaid_item_after_connection", _fake_sync_after_connection)
 
@@ -166,8 +187,11 @@ async def test_exchange_token_uses_primitive_ids_after_commit_boundaries(monkeyp
     async def _fake_get_active_plaid_item_ids_for_institution(**_kwargs):
         return []
 
-    async def _fake_find_existing_plaid_account(**_kwargs):
-        return None
+    async def _fake_upsert_plaid_account(**_kwargs):
+        return SimpleNamespace(id=uuid4(), item_id=_kwargs["item_id"], is_active=True, error_message=None), "inserted"
+
+    async def _fake_upsert_plaid_provider_token(**_kwargs):
+        return uuid4()
 
     async def _fake_upsert_item_status(**_kwargs):
         return None
@@ -178,7 +202,8 @@ async def test_exchange_token_uses_primitive_ids_after_commit_boundaries(monkeyp
     monkeypatch.setattr("app.controllers.plaid.PlaidAdapter", lambda: fake_adapter)
     monkeypatch.setattr("app.controllers.plaid.should_persist_user_data", lambda _user: True)
     monkeypatch.setattr("app.controllers.plaid.get_active_plaid_item_ids_for_institution", _fake_get_active_plaid_item_ids_for_institution)
-    monkeypatch.setattr("app.controllers.plaid.plaid_persist.find_existing_plaid_account", _fake_find_existing_plaid_account)
+    monkeypatch.setattr("app.controllers.plaid.plaid_persist.upsert_plaid_account", _fake_upsert_plaid_account)
+    monkeypatch.setattr("app.controllers.plaid.plaid_persist.upsert_plaid_provider_token", _fake_upsert_plaid_provider_token)
     monkeypatch.setattr("app.controllers.plaid.plaid_persist.upsert_item_status", _fake_upsert_item_status)
     monkeypatch.setattr("app.controllers.plaid.sync_plaid_item_after_connection", _fake_sync_after_connection)
 
@@ -199,7 +224,6 @@ async def test_exchange_token_binds_consent_expiration_as_datetime(monkeypatch):
     db = SimpleNamespace(
         execute=AsyncMock(side_effect=[
             _FakeUserResult(user),
-            _FakeTokenResult(),
             _FakeRowCountResult(1),
         ]),
         commit=AsyncMock(),
@@ -220,6 +244,10 @@ async def test_exchange_token_binds_consent_expiration_as_datetime(monkeypatch):
 
     monkeypatch.setattr("app.controllers.plaid.PlaidAdapter", lambda: fake_adapter)
     monkeypatch.setattr("app.controllers.plaid.should_persist_user_data", lambda _user: False)
+    monkeypatch.setattr(
+        "app.controllers.plaid.plaid_persist.upsert_plaid_provider_token",
+        AsyncMock(return_value=uuid4()),
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await exchange_token(
@@ -229,5 +257,5 @@ async def test_exchange_token_binds_consent_expiration_as_datetime(monkeypatch):
         )
 
     assert exc_info.value.status_code == 403
-    params = db.execute.await_args_list[2].args[1]
+    params = db.execute.await_args_list[1].args[1]
     assert params["consent_expiration_time"].isoformat() == "2026-01-01T00:00:00+00:00"

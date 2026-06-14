@@ -10,13 +10,13 @@ export interface LoanAssetRequest {
 }
 
 export type PayoutCurrency = 'USD' | 'USDT';
-export type BankOption = 'chase' | 'bofa';
+export type PayoutMethod = 'bank_transfer' | 'stablecoin_transfer';
 
 export interface LoanCalculateRequest {
   assets: LoanAssetRequest[];
   months: 6 | 12 | 18 | 24 | 36;
   payout_currency?: PayoutCurrency;
-  bank?: BankOption;
+  payout_method?: PayoutMethod;
 }
 
 // Response types
@@ -68,6 +68,7 @@ export interface LoanAssetDetail {
 }
 
 export interface LoanCalculateResponse {
+  calculation_id?: string | null;
   summary: LoanSummary;
   schedule: LoanSchedule;
   assets: LoanAssetDetail[];

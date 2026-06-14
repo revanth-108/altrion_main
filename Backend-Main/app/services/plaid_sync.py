@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -26,6 +27,62 @@ from app.services.plaid_investments_sync import sync_plaid_investments_for_user
 from app.services.providers.plaid import PlaidAdapter
 
 logger = get_logger()
+
+
+def build_plaid_sync_item_result(
+    *,
+    item_id: str,
+    step: str,
+    success: bool,
+    institution_id: str | None = None,
+    added: int = 0,
+    modified: int = 0,
+    removed: int = 0,
+    error_code: str | None = None,
+    message: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a normalized, JSON-safe Plaid sync result for one item step."""
+    result: dict[str, Any] = {
+        "item_id": item_id,
+        "step": step,
+        "success": success,
+        "added": added,
+        "modified": modified,
+        "removed": removed,
+        "error_code": error_code,
+        "message": message,
+    }
+    if institution_id is not None:
+        result["institution_id"] = institution_id
+    if details is not None:
+        result["details"] = details
+    return result
+
+
+def build_plaid_sync_error(
+    *,
+    item_id: str,
+    step: str,
+    message: str,
+    institution_id: str | None = None,
+    error_code: str | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """Return a normalized Plaid sync error payload."""
+    error: dict[str, Any] = {
+        "item_id": item_id,
+        "sync_step": step,
+        "error_code": error_code,
+        "error": message,
+        "message": message,
+        "plaid_error_code": error_code,
+        "plaid_error_message": message,
+        "request_id": request_id,
+    }
+    if institution_id is not None:
+        error["institution_id"] = institution_id
+    return error
 
 ASSET_DEPOSITORY_SUBTYPES = {
     "checking",
@@ -86,6 +143,196 @@ def positive_debt_amount(balance) -> float | None:
         return abs(float(balance))
     except (TypeError, ValueError):
         return None
+
+
+def plaid_item_supports_transactions(
+    available_products: list[str] | None,
+    billed_products: list[str] | None,
+) -> bool:
+    """
+    Return whether an Item should be expected to support normal bank transactions.
+
+    If Plaid item metadata has not been persisted yet, fall back to "unknown"
+    and allow sync to proceed. If Plaid explicitly reports products but omits
+    transactions, treat the Item as investment-only or otherwise non-transactional.
+    """
+    available = {str(product).lower() for product in (available_products or []) if product}
+    billed = {str(product).lower() for product in (billed_products or []) if product}
+    if not available and not billed:
+        return True
+    return "transactions" in available or "transactions" in billed
+
+
+async def get_plaid_transaction_sync_status_for_user(
+    db: AsyncSession,
+    user_id,
+) -> dict[str, Any]:
+    """Return transaction sync readiness for active Plaid items."""
+    stmt = select(ProviderToken).where(
+        ProviderToken.user_id == user_id,
+        ProviderToken.provider == "plaid",
+        ProviderToken.is_active == True,
+        ProviderToken.item_id.isnot(None),
+    ).order_by(desc(ProviderToken.updated_at), desc(ProviderToken.created_at))
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    items: list[dict[str, Any]] = []
+    has_transaction_updates = False
+    seen_item_ids: set[str] = set()
+
+    for row in rows:
+        token_data = parse_token_data(row.token_data)
+        resolved_item_id = row.item_id or token_data.get("item_id")
+        if not resolved_item_id or resolved_item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(resolved_item_id)
+        available_products = normalize_plaid_list(getattr(row, "available_products", None) or [])
+        billed_products = normalize_plaid_list(getattr(row, "billed_products", None) or [])
+        transactions_supported = plaid_item_supports_transactions(available_products, billed_products)
+        if not transactions_supported:
+            continue
+        update_available = bool(getattr(row, "transactions_update_available", False))
+        has_transaction_updates = has_transaction_updates or update_available
+        institution_name = getattr(row, "institution_name", None)
+        if not institution_name:
+            account_stmt = select(Account.institution_name).where(
+                Account.user_id == user_id,
+                Account.provider == "plaid",
+                Account.item_id == resolved_item_id,
+                Account.is_active == True,
+            ).limit(1)
+            account_result = await db.execute(account_stmt)
+            institution_name = account_result.scalar_one_or_none()
+        items.append(
+            {
+                "item_id": resolved_item_id,
+                "institution_name": institution_name,
+                "transactions_update_available": update_available,
+                "updated_at": getattr(row, "transactions_update_available_at", None) or getattr(row, "updated_at", None),
+            }
+        )
+
+    return {"hasTransactionUpdates": has_transaction_updates, "items": items}
+
+
+async def get_active_plaid_item_ids_for_institution(
+    db: AsyncSession,
+    user_id,
+    institution_id: str,
+    exclude_item_id: str | None = None,
+) -> list[str]:
+    """Return active Plaid item_ids for a user's institution, newest first."""
+    if not institution_id:
+        return []
+
+    stmt = select(ProviderToken).where(
+        ProviderToken.user_id == user_id,
+        ProviderToken.provider == "plaid",
+        ProviderToken.institution_id == institution_id,
+        ProviderToken.is_active == True,
+    ).order_by(desc(ProviderToken.updated_at), desc(ProviderToken.created_at))
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    active_item_ids: list[str] = []
+    seen_item_ids: set[str] = set()
+    for row in rows:
+        token_data = parse_token_data(row.token_data)
+        resolved_item_id = row.item_id or token_data.get("item_id")
+        if not resolved_item_id:
+            continue
+        if exclude_item_id and resolved_item_id == exclude_item_id:
+            continue
+        if resolved_item_id in seen_item_ids:
+            continue
+
+        account_stmt = select(Account.id).where(
+            Account.user_id == user_id,
+            Account.provider == "plaid",
+            Account.item_id == resolved_item_id,
+            Account.is_active == True,
+        ).limit(1)
+        account_result = await db.execute(account_stmt)
+        if account_result.scalar_one_or_none():
+            active_item_ids.append(resolved_item_id)
+            seen_item_ids.add(resolved_item_id)
+
+    account_stmt = (
+        select(Account.item_id)
+        .where(
+            Account.user_id == user_id,
+            Account.provider == "plaid",
+            Account.institution_id == institution_id,
+            Account.is_active == True,
+            Account.item_id.isnot(None),
+        )
+        .order_by(desc(Account.updated_at), desc(Account.created_at))
+    )
+    account_result = await db.execute(account_stmt)
+    for item_id_value in account_result.scalars().all():
+        if not item_id_value:
+            continue
+        if exclude_item_id and item_id_value == exclude_item_id:
+            continue
+        if item_id_value in seen_item_ids:
+            continue
+        active_item_ids.append(item_id_value)
+        seen_item_ids.add(item_id_value)
+
+    return active_item_ids
+
+
+async def deactivate_plaid_accounts_for_item_ids(
+    db: AsyncSession,
+    user_id,
+    item_ids: list[str],
+    *,
+    reason: str | None = None,
+) -> int:
+    """Mark all active Plaid accounts for the given item_ids inactive."""
+    unique_item_ids = [item_id for item_id in dict.fromkeys(item_ids) if item_id]
+    if not unique_item_ids:
+        return 0
+
+    stmt = select(Account).where(
+        Account.user_id == user_id,
+        Account.provider == "plaid",
+        Account.item_id.in_(unique_item_ids),
+        Account.is_active == True,
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    for account in rows:
+        account.is_active = False
+        if reason:
+            account.error_message = reason
+
+    return len(rows)
+
+
+async def deactivate_plaid_provider_tokens_for_item_ids(
+    db: AsyncSession,
+    user_id,
+    item_ids: list[str],
+) -> int:
+    """Mark Plaid provider token rows inactive for the given item_ids."""
+    unique_item_ids = [item_id for item_id in dict.fromkeys(item_ids) if item_id]
+    if not unique_item_ids:
+        return 0
+
+    stmt = select(ProviderToken).where(
+        ProviderToken.user_id == user_id,
+        ProviderToken.provider == "plaid",
+        ProviderToken.item_id.in_(unique_item_ids),
+        ProviderToken.is_active == True,
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    for token_row in rows:
+        token_row.is_active = False
+
+    return len(rows)
 
 
 def account_role_label(account_type: str | None, subtype: str | None) -> str:
@@ -213,6 +460,7 @@ async def get_plaid_token_rows_for_user(
     stmt = select(ProviderToken).where(
         ProviderToken.user_id == user_id,
         ProviderToken.provider == "plaid",
+        ProviderToken.is_active == True,
     ).order_by(desc(ProviderToken.created_at))
     result = await db.execute(stmt)
     rows = result.scalars().all()
@@ -229,6 +477,15 @@ async def get_plaid_token_rows_for_user(
                 seen_item_ids.add(resolved_item_id)
                 if row.item_id != resolved_item_id:
                     row.item_id = resolved_item_id
+                account_stmt = select(Account.id).where(
+                    Account.user_id == user_id,
+                    Account.provider == "plaid",
+                    Account.item_id == resolved_item_id,
+                    Account.is_active == True,
+                ).limit(1)
+                account_result = await db.execute(account_stmt)
+                if not account_result.scalar_one_or_none():
+                    continue
             deduped_rows.append(row)
         return deduped_rows
 
@@ -244,6 +501,40 @@ async def get_plaid_token_rows_for_user(
             seen_item_ids.add(resolved_item_id)
 
     return matched_rows
+
+
+async def get_active_plaid_refresh_rows_for_user(
+    db: AsyncSession,
+    user_id,
+) -> list[SimpleNamespace]:
+    """Return active item-scoped Plaid tokens for refresh.
+
+    Legacy rows with item_id NULL are intentionally excluded so refresh only
+    operates on safely migrated item-scoped connections.
+    """
+    stmt = select(ProviderToken).where(
+        ProviderToken.user_id == user_id,
+        ProviderToken.provider == "plaid",
+        ProviderToken.is_active == True,
+        ProviderToken.item_id.isnot(None),
+    ).order_by(desc(ProviderToken.updated_at), desc(ProviderToken.created_at))
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    active_rows: list[SimpleNamespace] = []
+    for row in rows:
+        token_data = parse_token_data(row.token_data)
+        resolved_item_id = row.item_id or token_data.get("item_id")
+        if not resolved_item_id:
+            continue
+        active_rows.append(SimpleNamespace(
+            item_id=resolved_item_id,
+            institution_id=getattr(row, "institution_id", None),
+            cursor=getattr(row, "cursor", None),
+            available_products=normalize_plaid_list(getattr(row, "available_products", None) or []),
+            billed_products=normalize_plaid_list(getattr(row, "billed_products", None) or []),
+            provider_token=row,
+        ))
+    return active_rows
 
 
 async def sync_plaid_step_for_user(
@@ -262,14 +553,17 @@ async def sync_plaid_step_for_user(
     The response includes per-item success/failure entries so callers can keep
     syncing when one Plaid Item errors out.
     """
-    token_rows = await get_plaid_token_rows_for_user(db, user.id, item_id=item_id)
+    user_pk = user.id
+    user_ref = SimpleNamespace(id=user_pk)
+    token_rows = await get_plaid_token_rows_for_user(db, user_pk, item_id=item_id)
     if item_id is not None and not token_rows:
         raise LookupError(f"No Plaid item found for item_id={item_id}")
 
     adapter = adapter or PlaidAdapter()
     sync_kwargs = sync_kwargs or {}
     items: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
+    errors: list[dict[str, Any]] = []
+    internal_user_id = str(user_pk)
 
     for token_row in token_rows:
         token_data = parse_token_data(token_row.token_data)
@@ -291,22 +585,21 @@ async def sync_plaid_step_for_user(
                 provider=token_row.provider,
                 token_data_type=value_type(token_row.token_data),
             )
-            errors.append(
-                {
-                    "item_id": "",
-                    "sync_step": sync_name,
-                    "error": message,
-                    "plaid_error_code": None,
-                    "plaid_error_message": message,
-                }
+            error = build_plaid_sync_error(
+                item_id="",
+                step=sync_name,
+                institution_id=institution_id,
+                message=message,
             )
+            errors.append(error)
             items.append(
-                {
-                    "item_id": "",
-                    "institution_id": institution_id,
-                    "success": False,
-                    "error": message,
-                }
+                build_plaid_sync_item_result(
+                    item_id="",
+                    step=sync_name,
+                    success=False,
+                    institution_id=institution_id,
+                    message=message,
+                )
             )
             continue
 
@@ -322,76 +615,86 @@ async def sync_plaid_step_for_user(
                 token_data_type=value_type(token_row.token_data),
                 access_token_present=False,
             )
-            errors.append(
-                {
-                    "item_id": resolved_item_id,
-                    "sync_step": sync_name,
-                    "error": message,
-                    "plaid_error_code": None,
-                    "plaid_error_message": message,
-                }
+            error = build_plaid_sync_error(
+                item_id=resolved_item_id,
+                step=sync_name,
+                institution_id=institution_id,
+                message=message,
             )
+            errors.append(error)
             items.append(
-                {
-                    "item_id": resolved_item_id,
-                    "institution_id": institution_id,
-                    "success": False,
-                    "error": message,
-                }
+                build_plaid_sync_item_result(
+                    item_id=resolved_item_id,
+                    step=sync_name,
+                    success=False,
+                    institution_id=institution_id,
+                    message=message,
+                )
             )
             continue
 
         try:
             result = await sync_fn(
                 db=db,
-                user=user,
+                user=user_ref,
                 item_id=resolved_item_id,
                 access_token=access_token,
                 adapter=adapter,
                 **sync_kwargs,
             )
+            summary = result.get("summary", {}) if isinstance(result, dict) else {}
+            added = int((result.get("added") if isinstance(result, dict) else None) or summary.get("added", 0) or 0)
+            modified = int((result.get("modified") if isinstance(result, dict) else None) or summary.get("modified", 0) or 0)
+            removed = int((result.get("removed") if isinstance(result, dict) else None) or summary.get("removed", 0) or 0)
             items.append(
-                {
-                    "item_id": resolved_item_id,
-                    "institution_id": institution_id,
-                    "success": True,
-                    "result": result,
-                }
+                build_plaid_sync_item_result(
+                    item_id=resolved_item_id,
+                    step=sync_name,
+                    success=True,
+                    institution_id=institution_id,
+                    added=added,
+                    modified=modified,
+                    removed=removed,
+                    details=result if isinstance(result, dict) else {"result": result},
+                )
             )
         except Exception as exc:
             await db.rollback()
             context = plaid_error_context(exc)
             logger.error(
                 "Plaid item sync step failed",
-                user_id=str(user.id),
+                user_id=internal_user_id,
                 item_id=resolved_item_id,
                 institution_id=institution_id,
                 sync_step=sync_name,
                 **context,
             )
+            message = context.get("plaid_display_message") or context.get("error") or str(exc)
             errors.append(
-                {
-                    "item_id": resolved_item_id,
-                    "sync_step": sync_name,
-                    "error": context.get("plaid_display_message") or context.get("error") or str(exc),
-                    "plaid_error_type": context.get("plaid_error_type"),
-                    "plaid_error_code": context.get("plaid_error_code"),
-                    "plaid_error_message": context.get("plaid_display_message") or context.get("error") or str(exc),
-                    "request_id": context.get("request_id"),
-                }
+                build_plaid_sync_error(
+                    item_id=resolved_item_id,
+                    step=sync_name,
+                    institution_id=institution_id,
+                    error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                    message=message,
+                    request_id=context.get("request_id"),
+                )
             )
             items.append(
-                {
-                    "item_id": resolved_item_id,
-                    "institution_id": institution_id,
-                    "success": False,
-                    "error": context.get("plaid_display_message") or context.get("error") or str(exc),
-                }
+                build_plaid_sync_item_result(
+                    item_id=resolved_item_id,
+                    step=sync_name,
+                    success=False,
+                    institution_id=institution_id,
+                    error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                    message=message,
+                )
             )
 
     return {
         "success": len(errors) == 0,
         "items": items,
+        "item_results": items,
         "errors": errors,
         "item_count": len(token_rows),
     }
@@ -408,66 +711,457 @@ async def sync_plaid_refresh_for_user(
     This is intended for UI refresh actions and webhook-driven refreshes.
     """
     adapter = PlaidAdapter()
-    step_specs = (
-        ("balances", "accounts/balance/get", sync_plaid_balances_for_item, {}),
-        ("transactions", "transactions/sync", sync_plaid_transactions_for_item, {}),
-        ("recurring", "transactions/recurring/get", sync_plaid_recurring_for_item, {}),
-        ("liabilities", "liabilities/get", sync_plaid_liabilities_for_item, {}),
-    )
+    user_pk = user.id
+    user_ref = SimpleNamespace(id=user_pk)
+
+    token_rows = await get_active_plaid_refresh_rows_for_user(db, user_pk)
+    if item_id is not None:
+        token_rows = [row for row in token_rows if row.item_id == item_id]
 
     steps: list[dict[str, Any]] = []
-    all_items: list[dict[str, Any]] = []
-    all_errors: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    skipped_legacy_count = 0
 
-    for sync_name, endpoint, sync_fn, sync_kwargs in step_specs:
-        step_result = await sync_plaid_step_for_user(
-            db=db,
-            user=user,
-            sync_name=sync_name,
-            sync_fn=sync_fn,
-            item_id=item_id,
-            adapter=adapter,
-            sync_kwargs=sync_kwargs,
-        )
+    for token_row in token_rows:
+        token_data = parse_token_data(token_row.provider_token.token_data)
+        access_token = token_data.get("access_token")
+        item_available_products = {str(product).lower() for product in (token_row.available_products or []) if product}
+        item_billed_products = {str(product).lower() for product in (token_row.billed_products or []) if product}
+        transactions_supported = plaid_item_supports_transactions(token_row.available_products, token_row.billed_products)
+        item_breakdown = {
+            "item_id": token_row.item_id,
+            "institution_id": token_row.institution_id,
+            "transactions_added": 0,
+            "transactions_modified": 0,
+            "transactions_removed": 0,
+            "cursor_saved": False,
+            "webhook_expected": transactions_supported,
+            "refresh_requested": False,
+            "transactions": {
+                "added": 0,
+                "modified": 0,
+                "removed": 0,
+                "cursor_saved": False,
+                "skipped_reason": None,
+            },
+            "balances": None,
+            "recurring": None,
+            "liabilities": None,
+            "investments": None,
+            "product_errors": [],
+            "step_results": [],
+        }
+
+        if not token_row.item_id:
+            skipped_legacy_count += 1
+            item_breakdown["transactions"]["skipped_reason"] = "legacy_item_id_missing"
+            item_breakdown["step_results"].append(
+                build_plaid_sync_item_result(
+                    item_id="",
+                    step="transactions",
+                    success=False,
+                    institution_id=token_row.institution_id,
+                    message="legacy_item_id_missing",
+                )
+            )
+            logger.warning(
+                "plaid_refresh_legacy_token_skipped",
+                user_id=str(user_pk),
+                item_id=None,
+                institution_id=token_row.institution_id,
+                reason="legacy_item_id_missing",
+            )
+            items.append(item_breakdown)
+            continue
+
+        if not access_token:
+            item_breakdown["transactions"]["skipped_reason"] = "missing_access_token"
+            error = build_plaid_sync_error(
+                item_id=token_row.item_id,
+                step="refresh",
+                institution_id=token_row.institution_id,
+                message="missing_access_token",
+            )
+            errors.append(error)
+            item_breakdown["step_results"].append(
+                build_plaid_sync_item_result(
+                    item_id=token_row.item_id,
+                    step="transactions",
+                    success=False,
+                    institution_id=token_row.institution_id,
+                    message="missing_access_token",
+                )
+            )
+            items.append(item_breakdown)
+            continue
+
+        # Transactions are skipped for items that do not advertise the product.
+        if not transactions_supported:
+            item_breakdown["transactions"]["skipped_reason"] = "investment_only"
+            item_breakdown["webhook_expected"] = False
+            item_breakdown["step_results"].append(
+                build_plaid_sync_item_result(
+                    item_id=token_row.item_id,
+                    step="transactions",
+                    success=True,
+                    institution_id=token_row.institution_id,
+                    message="investment_only",
+                )
+            )
+            logger.info(
+                "plaid_refresh_transactions_skipped",
+                user_id=str(user_pk),
+                item_id=token_row.item_id,
+                institution_id=token_row.institution_id,
+                available_products=list(item_available_products),
+                billed_products=list(item_billed_products),
+                cursor_present=token_row.cursor is not None,
+                skipped_reason="investment_only",
+            )
+        else:
+            try:
+                tx_result = await sync_plaid_transactions_for_item(
+                    db=db,
+                    user=user_ref,
+                    item_id=token_row.item_id,
+                    access_token=access_token,
+                    adapter=adapter,
+                )
+                tx_summary = tx_result.get("summary", {})
+                item_breakdown["transactions"] = {
+                    "added": tx_summary.get("added", 0),
+                    "modified": tx_summary.get("modified", 0),
+                    "removed": tx_summary.get("removed", 0),
+                    "cursor_saved": bool(tx_result.get("next_cursor")),
+                    "skipped_reason": None,
+                }
+                item_breakdown["transactions_added"] = tx_summary.get("added", 0)
+                item_breakdown["transactions_modified"] = tx_summary.get("modified", 0)
+                item_breakdown["transactions_removed"] = tx_summary.get("removed", 0)
+                item_breakdown["cursor_saved"] = bool(tx_result.get("next_cursor"))
+                item_breakdown["step_results"].append(
+                    build_plaid_sync_item_result(
+                        item_id=token_row.item_id,
+                        step="transactions",
+                        success=True,
+                        institution_id=token_row.institution_id,
+                        added=int(tx_summary.get("added", 0) or 0),
+                        modified=int(tx_summary.get("modified", 0) or 0),
+                        removed=int(tx_summary.get("removed", 0) or 0),
+                        details=tx_result,
+                    )
+                )
+                logger.info(
+                    "plaid_refresh_transactions_complete",
+                    user_id=str(user_pk),
+                    item_id=token_row.item_id,
+                    institution_id=token_row.institution_id,
+                    cursor_before=token_row.cursor,
+                    cursor_before_present=token_row.cursor is not None,
+                    cursor_after=tx_result.get("next_cursor"),
+                    cursor_after_present=bool(tx_result.get("next_cursor")),
+                    added_count=tx_summary.get("added", 0),
+                    modified_count=tx_summary.get("modified", 0),
+                    removed_count=tx_summary.get("removed", 0),
+                    product_errors=[],
+                )
+            except Exception as exc:
+                context = plaid_error_context(exc)
+                message = context.get("plaid_display_message") or context.get("error") or str(exc)
+                item_breakdown["transactions"]["skipped_reason"] = message
+                item_breakdown["product_errors"].append(context)
+                errors.append(
+                    build_plaid_sync_error(
+                        item_id=token_row.item_id,
+                        step="transactions",
+                        institution_id=token_row.institution_id,
+                        error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                        message=message,
+                        request_id=context.get("request_id"),
+                    )
+                )
+                item_breakdown["step_results"].append(
+                    build_plaid_sync_item_result(
+                        item_id=token_row.item_id,
+                        step="transactions",
+                        success=False,
+                        institution_id=token_row.institution_id,
+                        error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                        message=message,
+                    )
+                )
+                logger.error(
+                    "plaid_refresh_transactions_failed",
+                    user_id=str(user_pk),
+                    item_id=token_row.item_id,
+                    institution_id=token_row.institution_id,
+                    cursor_before=token_row.cursor,
+                    cursor_before_present=token_row.cursor is not None,
+                    **context,
+                )
+
         steps.append(
             {
-                "sync_step": sync_name,
-                "endpoint": endpoint,
-                "success": step_result["success"],
-                "item_count": step_result["item_count"],
-                "items": step_result["items"],
-                "errors": step_result["errors"],
+                "sync_step": "transactions",
+                "endpoint": "transactions/sync",
+                "success": item_breakdown["transactions"]["skipped_reason"] is None,
+                "item_count": 1,
+                "items": [item_breakdown],
+                "errors": errors[-1:] if errors and errors[-1].get("item_id") == token_row.item_id else [],
             }
         )
-        all_items.extend(step_result["items"])
-        all_errors.extend(step_result["errors"])
+        items.append(item_breakdown)
 
-    investments_result = await sync_plaid_investments_for_user(
-        db=db,
-        user=user,
-        item_id=item_id,
-    )
-    steps.append(
-        {
-            "sync_step": "investments",
-            "endpoint": "investments/holdings/get",
-            "success": investments_result["success"],
-            "item_count": len(investments_result["items"]),
-            "items": investments_result["items"],
-            "errors": investments_result["errors"],
-        }
-    )
-    all_items.extend(investments_result["items"])
-    all_errors.extend(investments_result["errors"])
+        # Balance, recurring, liabilities, and investments refresh remain per-item
+        # and are allowed to fail without aborting the whole refresh.
+        for sync_name, endpoint, sync_fn, sync_kwargs in (
+            ("balances", "accounts/balance/get", sync_plaid_balances_for_item, {}),
+            ("recurring", "transactions/recurring/get", sync_plaid_recurring_for_item, {}),
+            ("liabilities", "liabilities/get", sync_plaid_liabilities_for_item, {}),
+        ):
+            try:
+                result = await sync_fn(
+                    db=db,
+                    user=user_ref,
+                    item_id=token_row.item_id,
+                    access_token=access_token,
+                    adapter=adapter,
+                    **sync_kwargs,
+                )
+                item_breakdown[sync_name] = result.get("persisted")
+                item_breakdown["step_results"].append(
+                    build_plaid_sync_item_result(
+                        item_id=token_row.item_id,
+                        step=sync_name,
+                        success=True,
+                        institution_id=token_row.institution_id,
+                        details=result,
+                    )
+                )
+                steps.append({
+                    "sync_step": sync_name,
+                    "endpoint": endpoint,
+                    "success": True,
+                    "item_count": 1,
+                    "items": [item_breakdown],
+                    "errors": [],
+                })
+            except Exception as exc:
+                context = plaid_error_context(exc)
+                item_breakdown[sync_name] = None
+                item_breakdown["product_errors"].append(context)
+                message = context.get("plaid_display_message") or context.get("error") or str(exc)
+                errors.append(
+                    build_plaid_sync_error(
+                        item_id=token_row.item_id,
+                        step=sync_name,
+                        institution_id=token_row.institution_id,
+                        error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                        message=message,
+                        request_id=context.get("request_id"),
+                    )
+                )
+                item_breakdown["step_results"].append(
+                    build_plaid_sync_item_result(
+                        item_id=token_row.item_id,
+                        step=sync_name,
+                        success=False,
+                        institution_id=token_row.institution_id,
+                        error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                        message=message,
+                    )
+                )
+                steps.append({
+                    "sync_step": sync_name,
+                    "endpoint": endpoint,
+                    "success": False,
+                    "item_count": 1,
+                    "items": [item_breakdown],
+                    "errors": [errors[-1]],
+                })
 
-    unique_item_ids = {item.get("item_id") for item in all_items if item.get("item_id")}
+        try:
+            investments_result = await sync_plaid_investments_for_user(
+                db=db,
+                user=user_ref,
+                item_id=token_row.item_id,
+            )
+            item_breakdown["investments"] = {
+                "success": investments_result["success"],
+                "item_count": len(investments_result["items"]),
+            }
+            item_breakdown["step_results"].append(
+                build_plaid_sync_item_result(
+                    item_id=token_row.item_id,
+                    step="investments",
+                    success=investments_result["success"],
+                    institution_id=token_row.institution_id,
+                    details=investments_result,
+                )
+            )
+            steps.append({
+                "sync_step": "investments",
+                "endpoint": "investments/holdings/get",
+                "success": investments_result["success"],
+                "item_count": len(investments_result["items"]),
+                "items": [item_breakdown],
+                "errors": investments_result["errors"],
+            })
+        except Exception as exc:
+            context = plaid_error_context(exc)
+            item_breakdown["investments"] = {"success": False, "item_count": 0}
+            item_breakdown["product_errors"].append(context)
+            message = context.get("plaid_display_message") or context.get("error") or str(exc)
+            errors.append(
+                build_plaid_sync_error(
+                    item_id=token_row.item_id,
+                    step="investments",
+                    institution_id=token_row.institution_id,
+                    error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                    message=message,
+                    request_id=context.get("request_id"),
+                )
+            )
+            item_breakdown["step_results"].append(
+                build_plaid_sync_item_result(
+                    item_id=token_row.item_id,
+                    step="investments",
+                    success=False,
+                    institution_id=token_row.institution_id,
+                    error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                    message=message,
+                )
+            )
 
     return {
-        "success": len(all_errors) == 0,
-        "item_count": len(unique_item_ids),
+        "success": len(errors) == 0,
+        "item_count": len(token_rows),
         "steps": steps,
-        "items": all_items,
-        "errors": all_errors,
+        "items": items,
+        "item_results": items,
+        "errors": errors,
+        "skipped_legacy_token_count": skipped_legacy_count,
+    }
+
+
+async def request_plaid_transactions_refresh_for_user(
+    db: AsyncSession,
+    user: User,
+    item_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Request Plaid to re-check transactions for active items.
+
+    This does not fetch new DB rows directly. It only asks Plaid to refresh data;
+    when updates exist, Plaid will later emit SYNC_UPDATES_AVAILABLE.
+    """
+    adapter = PlaidAdapter()
+    user_pk = user.id
+    token_rows = await get_active_plaid_refresh_rows_for_user(db, user_pk)
+    if item_id is not None:
+        token_rows = [row for row in token_rows if row.item_id == item_id]
+
+    items: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for token_row in token_rows:
+        token_data = parse_token_data(token_row.provider_token.token_data)
+        access_token = token_data.get("access_token")
+        item_available_products = {str(product).lower() for product in (token_row.available_products or []) if product}
+        item_billed_products = {str(product).lower() for product in (token_row.billed_products or []) if product}
+        transactions_supported = plaid_item_supports_transactions(token_row.available_products, token_row.billed_products)
+        item_breakdown = {
+            "item_id": token_row.item_id,
+            "institution_id": token_row.institution_id,
+            "transactions_added": 0,
+            "transactions_modified": 0,
+            "transactions_removed": 0,
+            "cursor_saved": False,
+            "webhook_expected": transactions_supported,
+            "refresh_requested": False,
+            "transactions": {
+                "added": 0,
+                "modified": 0,
+                "removed": 0,
+                "cursor_saved": False,
+                "skipped_reason": None,
+            },
+        }
+
+        if not token_row.item_id:
+            item_breakdown["transactions"]["skipped_reason"] = "legacy_item_id_missing"
+            item_breakdown["webhook_expected"] = False
+            items.append(item_breakdown)
+            continue
+
+        if not transactions_supported:
+            item_breakdown["transactions"]["skipped_reason"] = "investment_only"
+            item_breakdown["webhook_expected"] = False
+            logger.info(
+                "plaid_transactions_refresh_skipped",
+                user_id=str(user_pk),
+                item_id=token_row.item_id,
+                institution_id=token_row.institution_id,
+                available_products=list(item_available_products),
+                billed_products=list(item_billed_products),
+                skipped_reason="investment_only",
+            )
+            items.append(item_breakdown)
+            continue
+
+        if not access_token:
+            item_breakdown["transactions"]["skipped_reason"] = "missing_access_token"
+            errors.append({
+                "item_id": token_row.item_id,
+                "sync_step": "transactions/refresh",
+                "error": "missing_access_token",
+            })
+            items.append(item_breakdown)
+            continue
+
+        try:
+            await adapter.refresh_transactions(access_token)
+            item_breakdown["refresh_requested"] = True
+            item_breakdown["transactions"]["skipped_reason"] = "pending_webhook"
+            logger.info(
+                "plaid_transactions_refresh_requested",
+                user_id=str(user_pk),
+                item_id=token_row.item_id,
+                institution_id=token_row.institution_id,
+                webhook_expected=True,
+                refresh_requested=True,
+            )
+        except Exception as exc:
+            context = plaid_error_context(exc)
+            item_breakdown["transactions"]["skipped_reason"] = context.get("plaid_display_message") or context.get("error") or str(exc)
+            item_breakdown["webhook_expected"] = False
+            errors.append({
+                "item_id": token_row.item_id,
+                "sync_step": "transactions/refresh",
+                "error": item_breakdown["transactions"]["skipped_reason"],
+                **context,
+            })
+            logger.error(
+                "plaid_transactions_refresh_failed",
+                user_id=str(user_pk),
+                item_id=token_row.item_id,
+                institution_id=token_row.institution_id,
+                **context,
+            )
+            items.append(item_breakdown)
+            continue
+
+        item_breakdown["transactions"]["skipped_reason"] = "pending_webhook"
+        item_breakdown["transactions"]["cursor_saved"] = False
+        items.append(item_breakdown)
+
+    return {
+        "success": len(errors) == 0,
+        "item_count": len(token_rows),
+        "items": items,
+        "errors": errors,
+        "requested": True,
     }
 
 
@@ -568,13 +1262,12 @@ async def sync_plaid_balances_for_item(
             )
             continue
 
-        stmt = select(Account).where(
-            Account.user_id == user.id,
-            Account.provider == "plaid",
-            Account.provider_account_id == plaid_account_id,
+        account_row = await plaid_persist.find_existing_plaid_account(
+            db=db,
+            user_id=user.id,
+            item_id=item_id,
+            provider_account_id=plaid_account_id,
         )
-        result = await db.execute(stmt)
-        account_row = result.scalar_one_or_none()
 
         if not account_row:
             errors.append({"account_id": plaid_account_id, "error": "Account not found in DB"})
@@ -725,7 +1418,17 @@ async def sync_plaid_balances_for_item(
         synced_count=len(synced),
         error_count=len(errors),
     )
-    return {"synced": synced, "errors": errors}
+    return {
+        "step": "balances",
+        "success": len(errors) == 0,
+        "item_id": item_id,
+        "added": len(synced),
+        "modified": 0,
+        "removed": 0,
+        "synced": synced,
+        "errors": errors,
+        "details": {"synced": synced, "errors": errors},
+    }
 
 
 async def sync_plaid_transactions_for_item(
@@ -740,50 +1443,129 @@ async def sync_plaid_transactions_for_item(
         ProviderToken.user_id == user.id,
         ProviderToken.provider == "plaid",
         ProviderToken.item_id == item_id,
+        ProviderToken.is_active == True,
     )
     result = await db.execute(stmt)
     token_row = result.scalar_one_or_none()
     stored_cursor = token_row.cursor if token_row else None
+    transactions_supported = plaid_item_supports_transactions(
+        getattr(token_row, "available_products", None) if token_row else None,
+        getattr(token_row, "billed_products", None) if token_row else None,
+    )
+
+    if token_row and not transactions_supported:
+        logger.info(
+            "transactions_sync_skipped",
+            endpoint="transactions/sync",
+            user_id=str(user.id),
+            item_id=item_id,
+            reason="investment_only",
+        )
+        return {
+            "summary": {"added": 0, "modified": 0, "removed": 0, "skipped": 1},
+            "added": [],
+            "modified": [],
+            "removed": [],
+            "next_cursor": stored_cursor,
+            "has_more": False,
+            "loop_count": 0,
+            "skipped_reason": "investment_only",
+        }
 
     logger.info(
         "transactions_sync_start",
         endpoint="transactions/sync",
         user_id=str(user.id),
         item_id=item_id,
+        cursor_before=stored_cursor,
         cursor_present=stored_cursor is not None,
     )
+    reset_required = False
+    sync_context = {"user_id": str(user.id), "item_id": item_id, "cursor_present": stored_cursor is not None}
     try:
         sync_result = await adapter.sync_transactions(
             access_token=access_token,
             cursor=stored_cursor,
-            log_context={"user_id": str(user.id), "item_id": item_id},
+            log_context=sync_context,
         )
     except Exception as exc:
-        logger.error(
-            "Plaid API call failed",
+        context = plaid_error_context(exc)
+        cursor_error_code = (context.get("plaid_error_code") or "").upper()
+        error_message = (context.get("plaid_display_message") or context.get("error") or str(exc)).lower()
+        should_reset_cursor = bool(
+            stored_cursor
+            and (
+                cursor_error_code in {
+                    "INVALID_CURSOR",
+                    "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION",
+                    "TRANSACTIONS_SYNC_MUTATION_DURING_CURSOR",
+                }
+                or "cursor" in error_message
+                or "reset" in error_message
+            )
+        )
+        if not should_reset_cursor:
+            if token_row:
+                token_row.last_transactions_sync_status = "failed"
+            logger.error(
+                "Plaid API call failed",
+                endpoint="transactions/sync",
+                user_id=str(user.id),
+                item_id=item_id,
+                **context,
+            )
+            raise
+
+        reset_required = True
+        logger.warning(
+            "transactions_cursor_reset_required",
             endpoint="transactions/sync",
             user_id=str(user.id),
             item_id=item_id,
-            **plaid_error_context(exc),
+            cursor_before=stored_cursor,
+            old_cursor_present=True,
+            **context,
         )
-        raise
+        try:
+            sync_result = await adapter.sync_transactions(
+                access_token=access_token,
+                cursor=None,
+                log_context={**sync_context, "cursor_reset_required": True},
+            )
+        except Exception as retry_exc:
+            retry_context = plaid_error_context(retry_exc)
+            if token_row:
+                token_row.last_transactions_sync_status = "failed"
+            logger.error(
+                "Plaid API call failed",
+                endpoint="transactions/sync",
+                user_id=str(user.id),
+                item_id=item_id,
+                cursor_reset_required=True,
+                **retry_context,
+            )
+            raise
     logger.info(
         "Plaid API call succeeded",
         endpoint="transactions/sync",
         user_id=str(user.id),
         item_id=item_id,
         request_id=None,
+        cursor_before=stored_cursor,
+        cursor_after=sync_result.get("next_cursor"),
         added_count=len(sync_result["added"]),
         modified_count=len(sync_result["modified"]),
         removed_count=len(sync_result["removed"]),
         has_more=sync_result["has_more"],
         loop_count=sync_result.get("loop_count"),
+        cursor_reset_required=reset_required,
     )
 
     account_stmt = select(Account).where(
         Account.user_id == user.id,
         Account.provider == "plaid",
         Account.item_id == item_id,
+        Account.is_active == True,
     )
     account_result = await db.execute(account_stmt)
     account_map = {acc.provider_account_id: acc.id for acc in account_result.scalars().all()}
@@ -799,6 +1581,11 @@ async def sync_plaid_transactions_for_item(
     )
     if token_row and sync_result["next_cursor"]:
         token_row.cursor = sync_result["next_cursor"]
+    if token_row:
+        token_row.last_transactions_synced_at = datetime.utcnow()
+        token_row.last_transactions_sync_status = "success"
+        token_row.transactions_update_available = False
+        token_row.transactions_update_available_at = None
 
     await db.commit()
     logger.info(
@@ -811,9 +1598,24 @@ async def sync_plaid_transactions_for_item(
         updated_count=persist_counts.get("modified", 0),
         removed_count=persist_counts.get("removed", 0),
         skipped_count=persist_counts.get("skipped", 0),
+        db_inserted_count=persist_counts.get("added", 0),
+        db_updated_count=persist_counts.get("modified", 0),
+        cursor_before=stored_cursor,
+        cursor_after=sync_result.get("next_cursor"),
         cursor_saved=bool(token_row and sync_result["next_cursor"]),
+        next_cursor_saved=bool(token_row and sync_result["next_cursor"]),
+        old_cursor_present=stored_cursor is not None,
     )
-    return {"summary": persist_counts, **sync_result}
+    return {
+        "step": "transactions",
+        "success": True,
+        "item_id": item_id,
+        "added": int(persist_counts.get("added", 0) or 0),
+        "modified": int(persist_counts.get("modified", 0) or 0),
+        "removed": int(persist_counts.get("removed", 0) or 0),
+        "summary": persist_counts,
+        **sync_result,
+    }
 
 
 async def sync_plaid_recurring_for_item(
@@ -852,8 +1654,15 @@ async def sync_plaid_recurring_for_item(
             reason="no_plaid_accounts",
         )
         return {
+            "step": "recurring",
+            "success": True,
+            "item_id": item_id,
+            "added": 0,
+            "modified": 0,
+            "removed": 0,
             "data": {"inflow_streams": [], "outflow_streams": []},
             "persisted": {"inflow": 0, "outflow": 0, "total": 0},
+            "details": {"data": {"inflow_streams": [], "outflow_streams": []}, "persisted": {"inflow": 0, "outflow": 0, "total": 0}},
         }
 
     try:
@@ -903,7 +1712,17 @@ async def sync_plaid_recurring_for_item(
         recurring_outflow_count=len(outflow_streams),
         recurring_persisted_count=persisted.get("total", 0),
     )
-    return {"data": data, "persisted": persisted}
+    return {
+        "step": "recurring",
+        "success": True,
+        "item_id": item_id,
+        "added": int(persisted.get("total", 0) or 0),
+        "modified": 0,
+        "removed": 0,
+        "data": data,
+        "persisted": persisted,
+        "details": {"data": data, "persisted": persisted},
+    }
 
 
 async def sync_plaid_liabilities_for_item(
@@ -986,7 +1805,18 @@ async def sync_plaid_liabilities_for_item(
         **persisted,
         **balance_fallback,
     )
-    return {"persisted": {**persisted, **balance_fallback}, "data": plaid_data}
+    merged_persisted = {**persisted, **balance_fallback}
+    return {
+        "step": "liabilities",
+        "success": True,
+        "item_id": item_id,
+        "added": int(merged_persisted.get("total", 0) or 0),
+        "modified": 0,
+        "removed": 0,
+        "persisted": merged_persisted,
+        "data": plaid_data,
+        "details": {"persisted": merged_persisted, "data": plaid_data},
+    }
 
 
 async def sync_plaid_item_after_connection(
@@ -994,6 +1824,8 @@ async def sync_plaid_item_after_connection(
     user: User,
     item_id: str,
     access_token: str,
+    available_products: list[str] | None = None,
+    billed_products: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Run the first local sync after a successful Plaid Link exchange.
@@ -1004,7 +1836,19 @@ async def sync_plaid_item_after_connection(
     Investments sync is also attempted and is non-fatal.
     """
     adapter = PlaidAdapter()
-    result: dict[str, Any] = {"balances": None, "transactions": None, "recurring": None, "liabilities": None, "investments": None, "errors": []}
+    result: dict[str, Any] = {
+        "balances": None,
+        "transactions": None,
+        "recurring": None,
+        "liabilities": None,
+        "investments": None,
+        "errors": [],
+        "step_results": [],
+    }
+    user_pk = user.id
+    user_ref = SimpleNamespace(id=user_pk)
+    internal_user_id = str(user_pk)
+    transactions_supported = plaid_item_supports_transactions(available_products, billed_products)
 
     for name, endpoint, sync_fn in (
         ("balances", "accounts/balance/get", sync_plaid_balances_for_item),
@@ -1012,29 +1856,84 @@ async def sync_plaid_item_after_connection(
         ("recurring", "transactions/recurring/get", sync_plaid_recurring_for_item),
         ("liabilities", "liabilities/get", sync_plaid_liabilities_for_item),
     ):
+        if name == "transactions" and not transactions_supported:
+            result[name] = {
+                "summary": {"added": 0, "modified": 0, "removed": 0, "skipped": 1},
+                "added": [],
+                "modified": [],
+                "removed": [],
+                "next_cursor": None,
+                "has_more": False,
+                "loop_count": 0,
+                "skipped_reason": "investment_only",
+            }
+            result["step_results"].append(
+                build_plaid_sync_item_result(
+                    item_id=item_id,
+                    step=name,
+                    success=True,
+                    message="investment_only",
+                    details=result[name],
+                )
+            )
+            logger.info(
+                "Plaid sync step skipped",
+                endpoint=endpoint,
+                user_id=internal_user_id,
+                item_id=item_id,
+                reason="investment_only",
+                transactions_supported=False,
+            )
+            continue
         try:
-            result[name] = await sync_fn(db, user, item_id, access_token, adapter)
+            result[name] = await sync_fn(db, user_ref, item_id, access_token, adapter)
+            result["step_results"].append(
+                build_plaid_sync_item_result(
+                    item_id=item_id,
+                    step=name,
+                    success=True,
+                    details=result[name],
+                )
+            )
         except Exception as exc:
             await db.rollback()
             context = plaid_error_context(exc)
-            result["errors"].append({"sync": name, **context})
+            message = context.get("plaid_display_message") or context.get("error") or str(exc)
+            result["errors"].append(
+                build_plaid_sync_error(
+                    item_id=item_id,
+                    step=name,
+                    message=message,
+                    error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                    request_id=context.get("request_id"),
+                )
+            )
+            result["step_results"].append(
+                build_plaid_sync_item_result(
+                    item_id=item_id,
+                    step=name,
+                    success=False,
+                    error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                    message=message,
+                )
+            )
             logger.error(
                 "Plaid sync step failed",
                 endpoint=endpoint,
-                user_id=str(user.id),
+                user_id=internal_user_id,
                 item_id=item_id,
                 **context,
             )
             if name == "balances":
                 await mark_plaid_item_failed(
                     db=db,
-                    user_id=user.id,
+                    user_id=internal_user_id,
                     item_id=item_id,
-            message=(
-                "Plaid balance sync parse failed: expected dict/list in Plaid balance response"
-                if "object has no attribute 'get'" in str(exc)
-                else context.get("plaid_display_message") or context.get("error") or "Balance sync failed"
-            ),
+                    message=(
+                        "Plaid balance sync parse failed: expected dict/list in Plaid balance response"
+                        if "object has no attribute 'get'" in str(exc)
+                        else message
+                    ),
                 )
 
     # Investments sync — non-fatal, runs after all item-scoped syncs.
@@ -1045,17 +1944,43 @@ async def sync_plaid_item_after_connection(
     try:
         result["investments"] = await sync_plaid_investments_for_user(
             db=db,
-            user=user,
+            user=user_ref,
             item_id=item_id,
+        )
+        result["step_results"].append(
+            build_plaid_sync_item_result(
+                item_id=item_id,
+                step="investments",
+                success=True,
+                details=result["investments"],
+            )
         )
     except Exception as exc:
         await db.rollback()
         context = plaid_error_context(exc)
-        result["errors"].append({"sync": "investments", **context})
+        message = context.get("plaid_display_message") or context.get("error") or str(exc)
+        result["errors"].append(
+            build_plaid_sync_error(
+                item_id=item_id,
+                step="investments",
+                message=message,
+                error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                request_id=context.get("request_id"),
+            )
+        )
+        result["step_results"].append(
+            build_plaid_sync_item_result(
+                item_id=item_id,
+                step="investments",
+                success=False,
+                error_code=context.get("plaid_error_code") or context.get("plaid_error_type"),
+                message=message,
+            )
+        )
         logger.error(
             "Plaid sync step failed",
             endpoint="investments/holdings/get",
-            user_id=str(user.id),
+            user_id=internal_user_id,
             item_id=item_id,
             **context,
         )

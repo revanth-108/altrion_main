@@ -12,7 +12,6 @@ export const walletPlatforms: WalletPlatforms = {
   ],
   banks: [
     { id: 'chase', name: 'Chase', icon: '🏦', category: 'bank' },
-    { id: 'bofa', name: 'Bank of America', icon: '🏦', category: 'bank' },
     { id: 'wells', name: 'Wells Fargo', icon: '🏦', category: 'bank' },
     { id: 'citi', name: 'Citibank', icon: '🏦', category: 'bank' },
   ],
@@ -27,6 +26,11 @@ export const walletPlatforms: WalletPlatforms = {
 // Mock portfolio data
 export const mockPortfolio: Portfolio = {
   totalValue: 147450.32,
+  changeType: '24h',
+  changeValue: 3450.22,
+  changePct: 2.4,
+  changeSinceLastValue: null,
+  changeSinceLastPct: null,
   change24h: 2.4,
   assets: [
     {
@@ -104,7 +108,7 @@ export const mockPortfolio: Portfolio = {
       price: 1,
       change24h: 0,
       platform: 'Coinbase',
-      type: 'stablecoin',
+      type: 'crypto',
     },
     {
       id: '5',

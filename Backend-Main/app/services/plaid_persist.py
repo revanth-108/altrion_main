@@ -11,12 +11,14 @@ import json
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, text
+from sqlalchemy import select, delete, text, literal_column, desc
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.holding import Holding
 from app.models.investment_transaction import InvestmentTransaction
+from app.models.provider_token import ProviderToken
 from app.models.security import Security
 from app.core.logging import get_logger
 from app.services.plaid_safe import (
@@ -69,22 +71,32 @@ async def find_existing_plaid_account(
     Falls back to a legacy item_id=NULL row so older connections can be
     reattached without creating a duplicate.
     """
-    exact_stmt = select(Account).where(
-        Account.user_id == user_id,
-        Account.provider == "plaid",
-        Account.item_id == item_id,
-        Account.provider_account_id == provider_account_id,
+    exact_stmt = (
+        select(Account)
+        .where(
+            Account.user_id == user_id,
+            Account.provider == "plaid",
+            Account.item_id == item_id,
+            Account.provider_account_id == provider_account_id,
+        )
+        .order_by(desc(Account.is_active), desc(Account.updated_at), desc(Account.created_at))
+        .limit(1)
     )
     exact_result = await db.execute(exact_stmt)
     exact = exact_result.scalar_one_or_none()
     if exact:
         return exact
 
-    legacy_stmt = select(Account).where(
-        Account.user_id == user_id,
-        Account.provider == "plaid",
-        Account.item_id.is_(None),
-        Account.provider_account_id == provider_account_id,
+    legacy_stmt = (
+        select(Account)
+        .where(
+            Account.user_id == user_id,
+            Account.provider == "plaid",
+            Account.item_id.is_(None),
+            Account.provider_account_id == provider_account_id,
+        )
+        .order_by(desc(Account.is_active), desc(Account.updated_at), desc(Account.created_at))
+        .limit(1)
     )
     legacy_result = await db.execute(legacy_stmt)
     legacy = legacy_result.scalar_one_or_none()
@@ -93,6 +105,164 @@ async def find_existing_plaid_account(
         return legacy
 
     return None
+
+
+def _build_plaid_account_values(
+    *,
+    user_id: uuid.UUID,
+    item_id: str,
+    provider_account_id: str,
+    pa: dict,
+    balances: dict,
+    institution_id: str | None = None,
+    active_on_insert: bool = True,
+) -> dict:
+    return {
+        "user_id": user_id,
+        "provider": "plaid",
+        "provider_account_id": provider_account_id,
+        "account_type": pa.get("type", "bank"),
+        "subtype": pa.get("subtype"),
+        "name": pa.get("name"),
+        "mask": pa.get("mask"),
+        "item_id": item_id,
+        "institution_name": pa.get("institution_name", ""),
+        "institution_id": institution_id or pa.get("institution_id"),
+        "balance_available": balances.get("available"),
+        "balance_current": balances.get("current"),
+        "balance_limit": balances.get("limit"),
+        "balance_currency": balances.get("iso_currency_code", "USD"),
+        "is_active": active_on_insert,
+        "last_synced_at": datetime.utcnow(),
+    }
+
+
+async def upsert_plaid_account(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    item_id: str,
+    provider_account_id: str,
+    pa: dict,
+    institution_id: str | None = None,
+    active_on_insert: bool = True,
+    active_on_update: bool | None = None,
+    clear_error_on_update: bool = False,
+) -> tuple[Account, str]:
+    """Insert or update a Plaid account using the canonical active-row key."""
+    if not item_id:
+        raise ValueError("Plaid account upsert requires a non-empty item_id")
+    if not provider_account_id:
+        raise ValueError("Plaid account upsert requires a non-empty provider_account_id")
+    if not active_on_insert:
+        raise ValueError("Plaid account upsert only supports active account rows")
+
+    balances = normalize_plaid_value(pa.get("balances"))
+    values = _build_plaid_account_values(
+        user_id=user_id,
+        item_id=item_id,
+        provider_account_id=provider_account_id,
+        pa=pa,
+        balances=balances,
+        institution_id=institution_id,
+        active_on_insert=active_on_insert,
+    )
+
+    insert_stmt = pg_insert(Account).values(values)
+    update_values = {
+        "account_type": insert_stmt.excluded.account_type,
+        "subtype": insert_stmt.excluded.subtype,
+        "name": insert_stmt.excluded.name,
+        "mask": insert_stmt.excluded.mask,
+        "item_id": insert_stmt.excluded.item_id,
+        "institution_name": insert_stmt.excluded.institution_name,
+        "institution_id": insert_stmt.excluded.institution_id,
+        "balance_available": insert_stmt.excluded.balance_available,
+        "balance_current": insert_stmt.excluded.balance_current,
+        "balance_limit": insert_stmt.excluded.balance_limit,
+        "balance_currency": insert_stmt.excluded.balance_currency,
+        "last_synced_at": insert_stmt.excluded.last_synced_at,
+        "updated_at": datetime.utcnow(),
+    }
+    if active_on_update is not None:
+        update_values["is_active"] = active_on_update
+    if clear_error_on_update:
+        update_values["error_message"] = None
+
+    stmt = (
+        insert_stmt.on_conflict_do_update(
+            index_elements=[
+                Account.user_id,
+                Account.provider,
+                Account.item_id,
+                Account.provider_account_id,
+            ],
+            # Partial-index inference requires a literal predicate. Binding
+            # "plaid" as a parameter prevents PostgreSQL from matching the
+            # ON CONFLICT target to the unique index.
+            index_where=text(
+                "provider = 'plaid' AND is_active = TRUE AND item_id IS NOT NULL"
+            ),
+            set_=update_values,
+        )
+        .returning(Account.id, literal_column("xmax = 0").label("inserted"))
+    )
+
+    result = await db.execute(stmt)
+    account_id, inserted = result.one()
+    account = await db.get(Account, account_id)
+    if account is None:
+        raise RuntimeError("Upserted Plaid account could not be reloaded")
+    await db.refresh(account)
+
+    action = "inserted" if inserted else "updated"
+    log_payload = {
+        "user_id": str(user_id),
+        "item_id": item_id,
+        "provider_account_id": provider_account_id,
+        "account_id": str(account.id),
+        "institution_id": institution_id,
+    }
+    if inserted:
+        logger.info("plaid_account_inserted", **log_payload)
+    else:
+        logger.info("plaid_account_updated", **log_payload)
+
+    return account, action
+
+
+async def upsert_plaid_provider_token(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    item_id: str,
+    access_token: str,
+) -> uuid.UUID:
+    """Atomically persist a Plaid Item token, including repeated Link callbacks."""
+    if not item_id:
+        raise ValueError("Plaid token upsert requires a non-empty item_id")
+    if not access_token:
+        raise ValueError("Plaid token upsert requires a non-empty access_token")
+
+    insert_stmt = pg_insert(ProviderToken).values(
+        user_id=user_id,
+        provider="plaid",
+        item_id=item_id,
+        token_data={"access_token": access_token},
+        is_active=True,
+    )
+    stmt = (
+        insert_stmt.on_conflict_do_update(
+            constraint="uq_provider_tokens_user_provider_item",
+            set_={
+                "token_data": insert_stmt.excluded.token_data,
+                "is_active": True,
+                "updated_at": datetime.utcnow(),
+            },
+        )
+        .returning(ProviderToken.id)
+    )
+    return (await db.execute(stmt)).scalar_one()
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +289,6 @@ async def upsert_accounts(
     Returns:
         List of Account ORM objects (both updated and newly created).
     """
-    now = datetime.utcnow()
     result_accounts: list[Account] = []
 
     for raw_pa in normalize_plaid_list(plaid_accounts):
@@ -131,45 +300,30 @@ async def upsert_accounts(
                 account_type=value_type(raw_pa),
             )
             continue
-        balances = normalize_plaid_value(pa.get("balances"))
-
-        existing = await find_existing_plaid_account(
+        account, action = await upsert_plaid_account(
             db=db,
             user_id=user_id,
             item_id=item_id,
             provider_account_id=plaid_account_id,
+            pa=pa,
         )
-
-        if existing:
-            existing.name = pa.get("name")
-            existing.subtype = pa.get("subtype")
-            existing.mask = pa.get("mask")
-            existing.balance_available = balances.get("available")
-            existing.balance_current = balances.get("current")
-            existing.balance_limit = balances.get("limit")
-            existing.balance_currency = balances.get("iso_currency_code", "USD")
-            existing.last_synced_at = now
-            result_accounts.append(existing)
-        else:
-            new_account = Account(
-                user_id=user_id,
-                provider="plaid",
-                provider_account_id=plaid_account_id,
-                account_type=pa.get("type", "bank"),
-                subtype=pa.get("subtype"),
-                name=pa.get("name"),
-                mask=pa.get("mask"),
+        if action == "updated":
+            logger.info(
+                "plaid_account_sync_updated",
+                user_id=str(user_id),
                 item_id=item_id,
-                institution_name=pa.get("institution_name", ""),
-                balance_available=balances.get("available"),
-                balance_current=balances.get("current"),
-                balance_limit=balances.get("limit"),
-                balance_currency=balances.get("iso_currency_code", "USD"),
-                is_active=True,
-                last_synced_at=now,
+                provider_account_id=plaid_account_id,
+                account_id=str(account.id),
             )
-            db.add(new_account)
-            result_accounts.append(new_account)
+        else:
+            logger.info(
+                "plaid_account_sync_inserted",
+                user_id=str(user_id),
+                item_id=item_id,
+                provider_account_id=plaid_account_id,
+                account_id=str(account.id),
+            )
+        result_accounts.append(account)
 
     await db.flush()  # populate IDs without committing — caller commits
     logger.info(

@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
+    "@supabase/supabase-js": "^2.105.1",
     "@tailwindcss/vite": "^4.1.17",
     "@tanstack/react-query": "^5.90.10",
     "@tanstack/react-query-devtools": "^5.91.1",
@@ -24,11 +25,13 @@
     "framer-motion": "^12.23.24",
     "immer": "^11.0.0",
     "lucide-react": "^0.554.0",
+    "motion": "^12.38.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-hook-form": "^7.66.1",
     "react-plaid-link": "^4.1.1",
     "react-router-dom": "^7.9.6",
+    "recharts": "^3.8.1",
     "tailwindcss": "^4.1.17",
     "zod": "^4.1.13",
     "zustand": "^5.0.8"
@@ -52,5 +55,10 @@
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
     "vitest": "^4.0.14"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-darwin-arm64": "^4.60.4",
+    "@tailwindcss/oxide-darwin-arm64": "^4.3.0",
+    "lightningcss-darwin-arm64": "^1.32.0"
   }
 }

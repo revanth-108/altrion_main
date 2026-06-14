@@ -55,8 +55,10 @@ async def test_sync_plaid_step_for_user_processes_all_items_and_continues_after_
         SimpleNamespace(item_id="item-2", institution_id="inst-2", provider="plaid", token_data={"access_token": "token-2"}),
     ]
     db = SimpleNamespace(rollback=AsyncMock())
+    called_item_ids = []
 
     async def fake_sync_fn(**kwargs):
+        called_item_ids.append(kwargs["item_id"])
         if kwargs["item_id"] == "item-2":
             raise RuntimeError("boom")
         return {"synced": [{"account_id": "acc-1"}], "errors": []}
@@ -74,52 +76,148 @@ async def test_sync_plaid_step_for_user_processes_all_items_and_continues_after_
     assert result["success"] is False
     assert result["items"][0]["success"] is True
     assert result["items"][1]["success"] is False
+    assert result["items"][0]["step"] == "balances"
+    assert result["items"][0]["added"] == 0
+    assert result["items"][1]["step"] == "balances"
+    assert result["items"][1]["message"] == "boom"
+    assert result["errors"][0]["message"] == "boom"
+    assert called_item_ids == ["item-1", "item-2"]
 
 
 @pytest.mark.asyncio
-async def test_sync_plaid_refresh_for_user_aggregates_steps(monkeypatch):
+async def test_sync_plaid_refresh_for_user_syncs_all_active_items_and_reports_transaction_counts(monkeypatch):
     user = SimpleNamespace(id=uuid4())
     db = SimpleNamespace()
 
-    async def fake_sync_step_for_user(*, sync_name, **kwargs):
-        if sync_name == "balances":
-            return {
-                "success": True,
-                "item_count": 2,
-                "items": [{"item_id": "item-1", "success": True, "result": {"synced": [1, 2]}}],
-                "errors": [],
-            }
-        if sync_name == "transactions":
-            return {
-                "success": False,
-                "item_count": 2,
-                "items": [{"item_id": "item-2", "success": False, "error": "boom"}],
-                "errors": [{"item_id": "item-2", "sync_step": "transactions", "error": "boom"}],
-            }
-        return {
-            "success": True,
-            "item_count": 2,
-            "items": [],
-            "errors": [],
-        }
+    active_rows = [
+        SimpleNamespace(
+            item_id="item-1",
+            institution_id="inst-1",
+            cursor="cursor-1",
+            available_products=["transactions", "investments"],
+            billed_products=["transactions"],
+            provider_token=SimpleNamespace(token_data={"access_token": "token-1"}),
+        ),
+        SimpleNamespace(
+            item_id="item-2",
+            institution_id="inst-2",
+            cursor=None,
+            available_products=["transactions"],
+            billed_products=["transactions"],
+            provider_token=SimpleNamespace(token_data={"access_token": "token-2"}),
+        ),
+    ]
 
-    async def fake_investments(**kwargs):
-        return {
-            "success": True,
-            "items": [{"item_id": "item-1", "success": True}],
-            "errors": [],
-        }
+    transactions_mock = AsyncMock(side_effect=[
+        {
+            "summary": {"added": 2, "modified": 1, "removed": 0},
+            "next_cursor": "cursor-1-new",
+            "added": [],
+            "modified": [],
+            "removed": [],
+            "has_more": False,
+            "loop_count": 1,
+        },
+        {
+            "summary": {"added": 0, "modified": 0, "removed": 1},
+            "next_cursor": "cursor-2-new",
+            "added": [],
+            "modified": [],
+            "removed": [],
+            "has_more": False,
+            "loop_count": 1,
+        },
+    ])
+    balances_mock = AsyncMock(return_value={"persisted": {"total": 1}})
+    recurring_mock = AsyncMock(return_value={"persisted": {"total": 0}})
+    liabilities_mock = AsyncMock(return_value={"persisted": {"total": 0}})
+    investments_mock = AsyncMock(return_value={"success": True, "items": [], "errors": []})
 
-    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_step_for_user", fake_sync_step_for_user)
-    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_investments_for_user", fake_investments)
+    monkeypatch.setattr("app.services.plaid_sync.get_active_plaid_refresh_rows_for_user", AsyncMock(return_value=active_rows))
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_transactions_for_item", transactions_mock)
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_balances_for_item", balances_mock)
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_recurring_for_item", recurring_mock)
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_liabilities_for_item", liabilities_mock)
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_investments_for_user", investments_mock)
 
     result = await sync_plaid_refresh_for_user(db=db, user=user)
 
-    assert result["success"] is False
-    assert len(result["steps"]) == 5
+    assert result["success"] is True
     assert result["item_count"] == 2
+    assert len(result["items"]) == 2
+    assert transactions_mock.await_count == 2
+    assert transactions_mock.await_args_list[0].kwargs["item_id"] == "item-1"
+    assert transactions_mock.await_args_list[1].kwargs["item_id"] == "item-2"
+    assert result["items"][0]["transactions"] == {
+        "added": 2,
+        "modified": 1,
+        "removed": 0,
+        "cursor_saved": True,
+        "skipped_reason": None,
+    }
+    assert result["items"][1]["transactions"]["removed"] == 1
     assert any(step["sync_step"] == "transactions" for step in result["steps"])
-    assert any(error["sync_step"] == "transactions" for error in result["errors"])
+    assert any(step["sync_step"] == "investments" for step in result["steps"])
+    assert result["items"][0]["step_results"][0]["step"] == "transactions"
+    assert result["items"][0]["step_results"][0]["success"] is True
+    assert result["items"][0]["step_results"][1]["step"] == "balances"
+    assert result["items"][0]["step_results"][1]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_sync_plaid_refresh_for_user_skips_legacy_item_id_rows(monkeypatch):
+    user = SimpleNamespace(id=uuid4())
+    db = SimpleNamespace()
+
+    token_rows = [
+        SimpleNamespace(
+            item_id=None,
+            institution_id="inst-legacy",
+            cursor=None,
+            available_products=["transactions"],
+            billed_products=["transactions"],
+            provider_token=SimpleNamespace(token_data={"access_token": "legacy-token"}),
+        ),
+        SimpleNamespace(
+            item_id="item-1",
+            institution_id="inst-1",
+            cursor=None,
+            available_products=["transactions"],
+            billed_products=["transactions"],
+            provider_token=SimpleNamespace(token_data={"access_token": "token-1"}),
+        ),
+    ]
+
+    transactions_mock = AsyncMock(return_value={
+        "summary": {"added": 1, "modified": 0, "removed": 0},
+        "next_cursor": "cursor-new",
+        "added": [],
+        "modified": [],
+        "removed": [],
+        "has_more": False,
+        "loop_count": 1,
+    })
+    balances_mock = AsyncMock(return_value={"persisted": {"total": 1}})
+    recurring_mock = AsyncMock(return_value={"persisted": {"total": 0}})
+    liabilities_mock = AsyncMock(return_value={"persisted": {"total": 0}})
+    investments_mock = AsyncMock(return_value={"success": True, "items": [], "errors": []})
+
+    monkeypatch.setattr("app.services.plaid_sync.get_active_plaid_refresh_rows_for_user", AsyncMock(return_value=token_rows))
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_transactions_for_item", transactions_mock)
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_balances_for_item", balances_mock)
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_recurring_for_item", recurring_mock)
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_liabilities_for_item", liabilities_mock)
+    monkeypatch.setattr("app.services.plaid_sync.sync_plaid_investments_for_user", investments_mock)
+
+    result = await sync_plaid_refresh_for_user(db=db, user=user)
+
+    assert result["success"] is True
+    assert result["item_count"] == 2
+    assert len(result["items"]) == 2
+    assert transactions_mock.await_count == 1
+    assert transactions_mock.await_args_list[0].kwargs["item_id"] == "item-1"
+    assert result["items"][0]["transactions"]["skipped_reason"] == "legacy_item_id_missing"
+    assert result["items"][1]["transactions"]["cursor_saved"] is True
 
 
 @pytest.mark.asyncio
@@ -152,6 +250,36 @@ async def test_upsert_holdings_logs_warning_when_account_mapping_missing(monkeyp
     warning_mock.assert_called_once()
     assert warning_mock.call_args.kwargs["item_id"] == "item-1"
     assert warning_mock.call_args.kwargs["plaid_account_id"] == "plaid-account-1"
+
+
+@pytest.mark.asyncio
+async def test_sync_plaid_step_for_user_keeps_previous_item_work_on_later_failure(monkeypatch):
+    user = SimpleNamespace(id=uuid4())
+    rows = [
+        SimpleNamespace(item_id="item-1", institution_id="inst-1", provider="plaid", token_data={"access_token": "token-1"}),
+        SimpleNamespace(item_id="item-2", institution_id="inst-2", provider="plaid", token_data={"access_token": "token-2"}),
+    ]
+    db = SimpleNamespace(rollback=AsyncMock(), persisted_item_ids=[])
+
+    async def fake_sync_fn(**kwargs):
+        item_id = kwargs["item_id"]
+        if item_id == "item-1":
+            db.persisted_item_ids.append(item_id)
+            return {"summary": {"added": 1, "modified": 0, "removed": 0}}
+        raise RuntimeError("later item failed")
+
+    monkeypatch.setattr(
+        "app.services.plaid_sync.get_plaid_token_rows_for_user",
+        AsyncMock(return_value=rows),
+    )
+
+    result = await sync_plaid_step_for_user(db=db, user=user, sync_name="balances", sync_fn=fake_sync_fn)
+
+    assert result["success"] is False
+    assert db.rollback.await_count == 1
+    assert db.persisted_item_ids == ["item-1"]
+    assert result["items"][0]["success"] is True
+    assert result["items"][1]["success"] is False
 
 
 @pytest.mark.asyncio

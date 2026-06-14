@@ -133,7 +133,7 @@ python run.py
 
 ### CORS Errors
 If you see CORS errors in browser console:
-- Verify backend `.env` has: `ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000`
+- Verify backend `.env` has: `ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000`
 - Restart backend after changing
 
 ### API Connection Failed

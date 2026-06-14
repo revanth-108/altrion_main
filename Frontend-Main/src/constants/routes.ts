@@ -1,20 +1,47 @@
 export const ROUTES = {
-  // Auth routes
   LOGIN: '/login',
   SIGNUP: '/signup',
+  AUTH_CALLBACK: '/auth/callback',
   ONBOARDING: '/onboarding',
-
-  // Connect routes
+  ONBOARDING_DETAILS: '/onboarding/details',
+  ONBOARDING_DOB: '/onboarding/date-of-birth',
+  ONBOARDING_INCOME: '/onboarding/annual-income',
+  ONBOARDING_INCOME_SOURCE: '/onboarding/income-source',
+  ONBOARDING_UPLOAD: '/onboarding/upload',
+  ONBOARDING_TERMS: '/onboarding/terms',
+  ONBOARDING_PAYMENT: '/onboarding/payment',
+  ONBOARDING_COMPLETE: '/onboarding/complete',
   CONNECT_SELECT: '/connect/select',
   CONNECT_API: '/connect/api',
-
-  // App routes
-  DASHBOARD: '/dashboard',
-  LOAN_APPLICATION: '/dashboard/loan',
-  LOAN_REVIEW: '/dashboard/loan/review',
-  LOAN_SUMMARY: '/dashboard/loan/summary',
-  LOAN_CONFIRMATION: '/dashboard/loan/confirmation',
-
-  // Default
+  CONNECT_CRYPTO: '/connect/crypto',
+  DASHBOARD: '/home',
+  ACCOUNTS: '/home/accounts',
+  ACCOUNT_DETAIL: '/home/accounts/:accountId',
+  PROFILE: '/home/profile',
+  LOAN_DETAIL: '/home/profile/loan/:id',
+  BUDGET: '/home/budget',
+  OVERVIEW: '/home/overview',
+  ASSET_DETAIL: '/home/asset/:symbol',
+  LOAN_APPLICATION: '/home/loan',
+  LOAN_REVIEW: '/home/loan/review',
+  LOAN_SUMMARY: '/home/loan/summary',
+  LOAN_CONFIRMATION: '/home/loan/confirmation',
+  TRANSACTIONS: '/home/transactions',
+  LIABILITIES: '/home/liabilities',
+  RECURRING: '/home/recurring',
+  PRICING: '/pricing',
+  SUBSCRIPTION: '/subscription',
+  SUBSCRIPTION_SUCCESS: '/subscription/success',
+  WORTH_IT: '/worth-it',
+  WORTH_IT_HISTORY: '/worth-it/history',
+  WORTH_IT_SESSION_INSIGHTS: '/worth-it/history/:sessionId',
+  MONTE_CARLO: '/home/monte-carlo',
+  PORTFOLIO_XRAY: '/home/portfolio-xray',
+  RESEARCH_LAB: '/home/research-lab',
+  FINANCIAL_ANALYSIS: '/home/financial-analysis',
   HOME: '/',
 } as const;
+
+export const getAssetDetailRoute = (symbol: string) => `/home/asset/${symbol}`;
+export const getAccountDetailRoute = (accountId: string) => `/home/accounts/${accountId}`;
+export const getLoanDetailRoute = (id: string) => `/home/profile/loan/${id}`;

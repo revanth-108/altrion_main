@@ -4,11 +4,11 @@ Rate limiting middleware
 from fastapi import Request, HTTPException, status
 from datetime import datetime, timedelta
 from typing import Dict
-import structlog
 
 from app.core.redis_client import get_redis
+from app.core.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 # In-memory rate limit store (for simplicity - Redis would be better for production)
 _rate_limit_store: Dict[str, datetime] = {}

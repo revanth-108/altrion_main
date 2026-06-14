@@ -12,7 +12,7 @@ export const validateSignup = [
     .notEmpty()
     .withMessage('Email is required')
     .isEmail()
-    .withMessage('Please provide a valid email')
+    .withMessage('Please provide a valid email address')
     .normalizeEmail(),
   body('password')
     .notEmpty()

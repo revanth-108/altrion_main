@@ -9,33 +9,12 @@ import {
   AlertTriangle,
   CheckCircle,
 } from 'lucide-react';
-import { Button, Card, Header } from '../../components/ui';
+import { Button, Card } from '../../components/ui';
+import { DashboardLayout } from '../../components/layout';
 import { formatCurrency } from '../../utils';
-import { CONTAINER_VARIANTS, ITEM_VARIANTS, ROUTES } from '../../constants';
+import { CONTAINER_VARIANTS, ITEM_VARIANTS, ROUTES, PAYOUT_METHOD_LABELS } from '../../constants';
 import { useLoanStore } from '../../store';
-import type { LoanCalculateResponse } from '@/types';
-
-interface SelectedAsset {
-  name: string;
-  symbol: string;
-  amount: number;
-  value: number;
-}
-
-interface LoanSummaryData {
-  loanResponse: LoanCalculateResponse;
-  selectedAssets: SelectedAsset[];
-  loanRequest: {
-    months: number;
-    payout_currency: string;
-    bank: string;
-  };
-}
-
-const BANK_LABELS: Record<string, string> = {
-  chase: 'Chase',
-  bofa: 'Bank of America',
-};
+import type { LoanSummaryData } from '@/types';
 
 export function LoanSummary() {
   const navigate = useNavigate();
@@ -81,11 +60,11 @@ export function LoanSummary() {
         loanRequest: {
           assets: loanResponse.assets.map(a => ({
             symbol: a.symbol,
-            collateral_value: a.collateral_usd,
+            allocation_usd: a.collateral_usd,
           })),
           months: loanRequest.months,
           payout_currency: loanRequest.payout_currency,
-          bank: loanRequest.bank,
+          payout_method: loanRequest.payout_method,
         },
         selectedAssets,
         totalCollateral: summary.total_collateral,
@@ -94,16 +73,7 @@ export function LoanSummary() {
   };
 
   return (
-    <div className="min-h-screen bg-dark-bg relative">
-      {/* Atmospheric background */}
-      <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-altrion-500/10 rounded-full blur-[120px] animate-pulse" style={{ animationDuration: '8s' }} />
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-accent-cyan/5 rounded-full blur-[120px] animate-pulse" style={{ animationDuration: '10s' }} />
-      </div>
-
-      <Header />
-
-      <main className="max-w-4xl mx-auto px-5 py-8">
+    <DashboardLayout maxWidth="max-w-4xl" padding="px-5 py-8">
         <motion.div
           variants={CONTAINER_VARIANTS}
           initial="hidden"
@@ -120,12 +90,9 @@ export function LoanSummary() {
             >
               <CheckCircle size={36} className="text-blue-400" />
             </motion.div>
-            <h1 className="font-display text-3xl font-bold text-text-primary mb-2">
+            <h1 className="font-display text-3xl font-bold text-text-primary">
               Review Your Loan Terms
             </h1>
-            <p className="text-text-secondary">
-              Please review all loan details carefully before confirming your application.
-            </p>
           </motion.div>
 
           {/* Loan Summary Card */}
@@ -135,10 +102,7 @@ export function LoanSummary() {
                 <div className="w-12 h-12 rounded-xl bg-altrion-500/20 flex items-center justify-center">
                   <Wallet size={24} className="text-altrion-400" />
                 </div>
-                <div>
-                  <h3 className="font-display text-2xl font-semibold text-text-primary">Loan Summary</h3>
-                  <p className="text-sm text-text-secondary">Your approved loan details</p>
-                </div>
+                <h3 className="font-display text-2xl font-semibold text-text-primary">Loan Summary</h3>
               </div>
 
               {/* Main Loan Metrics */}
@@ -206,9 +170,9 @@ export function LoanSummary() {
                   </p>
                 </div>
                 <div className="p-4 bg-dark-elevated rounded-xl">
-                  <p className="text-text-muted text-xs mb-1">Bank Account</p>
+                  <p className="text-text-muted text-xs mb-1">Payout Method</p>
                   <p className="text-xl font-bold text-text-primary">
-                    {BANK_LABELS[loanRequest?.bank ?? 'chase'] || loanRequest?.bank || 'Chase'}
+                    {PAYOUT_METHOD_LABELS[loanRequest?.payout_method ?? 'bank_transfer'] || loanRequest?.payout_method || 'Bank Transfer'}
                   </p>
                 </div>
               </div>
@@ -234,7 +198,7 @@ export function LoanSummary() {
                           {(asset.symbol ?? 'XX').slice(0, 2)}
                         </div>
                         <div>
-                          <p className="font-semibold text-text-primary">{asset.symbol ?? 'Unknown'}</p>
+                          <p className="font-semibold text-text-primary">{asset.symbol ?? 'Unlabeled asset'}</p>
                           <p className="text-text-muted text-sm">{asset.tier ?? 'Tier 1'}</p>
                         </div>
                       </div>
@@ -360,7 +324,6 @@ export function LoanSummary() {
             </Button>
           </motion.div>
         </motion.div>
-      </main>
-    </div>
+    </DashboardLayout>
   );
 }

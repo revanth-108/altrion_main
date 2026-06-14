@@ -1,0 +1,51 @@
+Strategic Implementation Blueprint: Altrion AI Wealth Intelligence
+Date: March 2026
+System Components: Claude 3.5 (Anthropic), Supabase (Postgres + Vector), Plaid, Financial Modeling Prep (FMP).
+
+1. Executive Summary: Current State
+Your application, app.altrion.ai, sits on a powerful data trifecta:
+User Context (Plaid): Real-time visibility into bank accounts, transactions, and holdings.
+Market Context (FMP): Real-time stock prices, historical data, and SEC filing text.
+State Management (Supabase): Secure storage for user profiles and cached financial snapshots.
+The goal is to integrate Claude as a reasoning engine that synthesizes this data without high latency or excessive API costs.
+
+2. Optimized Technical Architecture (The "Agentic" Approach)
+To ensure the system is less pricy and more effective, we use a "Tool-Use" (Function Calling) architecture.
+A. Data Layer (Supabase + pgvector)
+The Problem: Sending full 10-K filings or 6 months of Plaid transactions to Claude costs $0.50+ per message.
+The Solution: Use Supabase pgvector.
+Process: Convert FMP filings and user transaction descriptions into "Embeddings."
+Result: When a user asks a question, you only fetch the most relevant 10-20 lines of data. This reduces the "Context Window" size by 90%.
+B. Logic Layer (Claude 3.5 Sonnet)
+The Role: Claude acts as the Router. It does not hold data; it asks for it.
+Prompt Caching: We cache the "System Prompt" (Investment rules, compliance guardrails) so you only pay for the new parts of the conversation.
+
+3. Step-by-Step Implementation Process
+Phase 1: The "Toolbox" Setup (Supabase Edge Functions)
+Build three primary tools in your backend that Claude can "call":
+get_user_financials: Queries Supabase for the latest Plaid-synced balances.
+get_market_data: Hits the FMP API for real-time ticker prices or ratios.
+search_knowledge_base: Performs a semantic search on SEC filings stored in pgvector.
+Phase 2: The Conversation Flow (Low-Cost)
+User Input: "How is my portfolio's NVDA exposure affecting my risk today?"
+Claude (Router Phase): Recognizes it needs (a) User's NVDA holdings and (b) NVDA's current price/volatility.
+The Intercept: Your backend executes the Plaid/FMP calls and returns a compressed JSON summary to Claude.
+Claude (Reasoning Phase): Synthesizes the two data points and provides the answer.
+Phase 3: Cost & Performance Tuning
+Token Management: Set max_tokens for analysis to 400. Financial summaries don't need to be essays.
+System Prompt Caching: By caching the system prompt, recurring users cost ~50% less per message.
+Parallelism: Use tool_use to trigger Plaid and FMP requests simultaneously, cutting response time in half.
+
+4. Competitive Advantage: The "Altrion" Guardrails
+To ensure the system is "Pro-Level," include these rules in your System Prompt:
+Citations Required: Claude must state: "Based on your Chase checking balance as of [Time]..."
+Regulatory Compliance: AI must include a disclaimer: "This is a data analysis, not personalized financial advice."
+Hallucination Check: If FMP data is unavailable, Claude is programmed to say "I cannot see the current market price" rather than guessing.
+
+5. Next Steps for Development
+Enable pgvector in Supabase to start indexing earnings transcripts from FMP.
+Configure Anthropic Tool Use to map your specific Supabase table schemas.
+Set up Prompt Caching to lower the cost of high-frequency user interactions.
+
+Would you like me to generate the specific "System Prompt" or the JSON Tool Definitions for your developers to paste directly into the code?
+

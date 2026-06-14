@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS public.provider_tokens (
     user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     provider VARCHAR(50) NOT NULL,
     token_data JSONB NOT NULL,
+    institution_id VARCHAR(50),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_provider_tokens_user_provider UNIQUE(user_id, provider)
@@ -97,6 +98,7 @@ CREATE TABLE IF NOT EXISTS public.provider_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_provider_tokens_user_id ON public.provider_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_provider_tokens_provider ON public.provider_tokens(provider);
+CREATE INDEX IF NOT EXISTS idx_provider_tokens_institution_id ON public.provider_tokens(institution_id);
 
 -- Enable Row Level Security on provider_tokens
 ALTER TABLE public.provider_tokens ENABLE ROW LEVEL SECURITY;

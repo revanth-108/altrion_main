@@ -26,12 +26,28 @@ class AssetResponse(BaseModel):
     asset_class: str
     sources: List[AssetSourceBreakdown]  # Expandable breakdown
 
+    class Config:
+        from_attributes = True
+
 
 class PortfolioResponse(BaseModel):
     """Portfolio response"""
     schema_version: str = "v1"
+    # total_value is retained for backward compatibility and means assets only.
     total_value: Decimal
+    portfolio_value: Decimal
+    total_assets: Decimal
+    total_liabilities: Decimal
+    liabilities_total: Decimal
+    net_worth: Decimal
+    change_type: str = "tracking_started"
+    change_value: Optional[float] = None
+    change_pct: Optional[float] = None
+    change_since_last_value: Optional[float] = None
+    change_since_last_pct: Optional[float] = None
     change_24h: Optional[float] = None
+    change_24h_pct: Optional[float] = None
+    change_24h_value: Optional[float] = None
     assets: List[AssetResponse]
     categories: dict  # { "crypto": Decimal, "equity": Decimal, "cash_equivalent": Decimal }
     warnings: List[dict]  # Global warnings

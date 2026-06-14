@@ -240,29 +240,14 @@ async def exchange_token(
         access_token = token_data["access_token"]
         item_id = token_data["item_id"]
 
-        # Step 2: Store token in provider_tokens
-        # One row per (user_id, provider, item_id) — supports multiple banks
-        stmt = select(ProviderToken).where(
-            ProviderToken.user_id == user_pk,
-            ProviderToken.provider == "plaid",
-            ProviderToken.item_id == item_id,
+        # Step 2: Store token atomically. Plaid Link callbacks can be retried,
+        # so repeated or concurrent exchanges for one Item must be idempotent.
+        await plaid_persist.upsert_plaid_provider_token(
+            db=db,
+            user_id=user_pk,
+            item_id=item_id,
+            access_token=access_token,
         )
-        result = await db.execute(stmt)
-        existing_token = result.scalar_one_or_none()
-
-        if existing_token:
-            existing_token.token_data = {"access_token": access_token}
-            existing_token.item_id = item_id
-            existing_token.is_active = True
-        else:
-            db.add(ProviderToken(
-                user_id=user_pk,
-                provider="plaid",
-                token_data={"access_token": access_token},
-                item_id=item_id,
-                is_active=True,
-            ))
-
         await db.commit()
 
         item_status = None
@@ -351,38 +336,25 @@ async def exchange_token(
                     account_type=value_type(raw_acc),
                 )
                 continue
-            existing_account = await plaid_persist.find_existing_plaid_account(
+            account, action = await plaid_persist.upsert_plaid_account(
                 db=db,
                 user_id=user_pk,
                 item_id=item_id,
                 provider_account_id=plaid_account_id,
+                pa=acc,
+                institution_id=institution_id,
+                active_on_insert=True,
+                active_on_update=True,
+                clear_error_on_update=True,
             )
-
-            if existing_account:
-                # Re-connecting — update fields
-                existing_account.is_active = True
-                existing_account.error_message = None
-                existing_account.item_id = item_id
-                if institution_id:
-                    existing_account.institution_id = institution_id
-                existing_account.name = acc.get("name")
-                existing_account.subtype = acc.get("subtype")
-                existing_account.mask = acc.get("mask")
-            else:
-                # New account
-                db.add(Account(
-                    user_id=user_pk,
-                    provider="plaid",
-                    provider_account_id=plaid_account_id,
-                    name=acc.get("name"),
-                    account_type=acc.get("type", "bank"),
-                    subtype=acc.get("subtype"),
-                    mask=acc.get("mask"),
-                    item_id=item_id,
-                    institution_name="",
-                    institution_id=institution_id,
-                    is_active=True,
-                ))
+            logger.info(
+                "plaid_exchange_account_persisted",
+                user_id=internal_user_id,
+                item_id=item_id,
+                provider_account_id=plaid_account_id,
+                account_id=str(account.id),
+                action=action,
+            )
 
             connected_accounts.append({
                 "provider_account_id": plaid_account_id,
@@ -2484,4 +2456,3 @@ async def remove_item_by_id(
         current_user=current_user,
         db=db,
     )
-

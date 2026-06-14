@@ -19,15 +19,15 @@ from decimal import Decimal
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-import structlog
 
 from app.schemas.normalization import CanonicalHolding
 from app.models.holding import Holding
 from app.models.account import Account
 from app.services.asset_mapping import AssetMappingService
 from app.services.providers.base import BaseProviderAdapter
+from app.core.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 
 class NormalizationService:
@@ -64,7 +64,7 @@ class NormalizationService:
         try:
             # Extract raw holdings from provider data
             raw_holdings = await adapter.extract_holdings(raw_data)
-            
+
             for raw_holding in raw_holdings:
                 try:
                     # Resolve symbol via mapping table
@@ -72,7 +72,7 @@ class NormalizationService:
                         provider=provider,
                         provider_symbol=raw_holding.get("symbol"),
                     )
-                    
+
                     if not mapping:
                         warnings.append({
                             "type": "unmapped_symbol",
@@ -148,15 +148,24 @@ class NormalizationService:
                 user_id_uuid = UUID(holding.user_id) if isinstance(holding.user_id, str) else holding.user_id
                 
                 # Check if holding exists
-                stmt = select(Holding).where(
-                    Holding.account_id == account_id_uuid,
-                    Holding.canonical_symbol == holding.canonical_symbol,
-                )
+                if holding.source == "plaid" and holding.asset_class == "cash_equivalent" and holding.canonical_symbol == "USD":
+                    stmt = select(Holding).where(
+                        Holding.account_id == account_id_uuid,
+                        Holding.source == "plaid",
+                        Holding.asset_class == "cash_equivalent",
+                        Holding.security_id.is_(None),
+                    )
+                else:
+                    stmt = select(Holding).where(
+                        Holding.account_id == account_id_uuid,
+                        Holding.canonical_symbol == holding.canonical_symbol,
+                    )
                 result = await self.db.execute(stmt)
                 existing = result.scalar_one_or_none()
                 
                 if existing:
                     # Update existing holding
+                    existing.canonical_symbol = holding.canonical_symbol
                     existing.quantity = holding.quantity
                     existing.asset_class = holding.asset_class
                     existing.retrieved_at = holding.retrieved_at

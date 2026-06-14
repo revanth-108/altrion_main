@@ -3,11 +3,11 @@ Coinbase provider adapter
 """
 from typing import List, Dict, Any
 from coinbase.rest import RESTClient
-import structlog
 
 from app.services.providers.base import BaseProviderAdapter
+from app.core.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 
 class CoinbaseAdapter(BaseProviderAdapter):

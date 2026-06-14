@@ -1,25 +1,21 @@
-import { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { useForm as useReactHookForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Mail, Lock, User, Eye, EyeOff, Check, Shield, Users, Zap } from 'lucide-react';
+import { Mail, User, Check, Shield, Users, Zap } from 'lucide-react';
 import { AuthLayout } from '../../components/layout/AuthLayout';
-import { Button, Input } from '../../components/ui';
-import { usePasswordToggle, useSignup } from '../../hooks';
+import { Button, Input, PasswordInput } from '../../components/ui';
+import { useOAuthLogin, useSignup } from '../../hooks';
 import { useToast } from '../../components/ui';
 import { getPasswordRequirements } from '../../utils';
 import { ROUTES } from '../../constants';
 import { signupSchema, type SignupFormData } from '../../schemas';
-import { useAuthStore, selectError } from '../../store';
 
 export function Signup() {
-  const { showPassword, togglePassword, inputType } = usePasswordToggle();
   const { success, error: showError } = useToast();
-  const authError = useAuthStore(selectError);
-  const clearError = useAuthStore((state) => state.clearError);
 
   const signupMutation = useSignup();
+  const oauthMutation = useOAuthLogin();
 
   const {
     register,
@@ -41,21 +37,22 @@ export function Signup() {
 
   const passwordRequirements = getPasswordRequirements(password, confirmPassword);
 
-  // Show auth errors as toast
-  useEffect(() => {
-    if (authError) {
-      showError('Signup failed', authError);
-      clearError();
-    }
-  }, [authError, showError, clearError]);
-
   const onSubmit = async (data: SignupFormData) => {
     try {
-      await signupMutation.mutateAsync(data);
+      const result = await signupMutation.mutateAsync(data);
+      if (result.emailVerificationRequired || !result.tokens?.accessToken) {
+        success('Check your email', 'We sent you a verification link. Confirm your email, then sign in.');
+        return;
+      }
       success('Welcome!', 'Your account has been created successfully.');
-    } catch {
-      // Error is handled by mutation and toast
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Signup failed';
+      showError('Signup failed', message);
     }
+  };
+
+  const handleGoogleSignup = () => {
+    oauthMutation.mutate();
   };
 
   // Calculate progress for Zeigarnik effect (encourages completion)
@@ -73,14 +70,13 @@ export function Signup() {
   return (
     <AuthLayout
       title="Create your account"
-      subtitle="Start managing your unified portfolio today"
     >
       {/* Social Proof - Anchoring effect */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2 }}
-        className="flex items-center justify-center gap-6 mb-4 pb-4 border-b border-dark-border/50"
+        className="flex flex-wrap items-center justify-center gap-3 sm:gap-5 mb-3 pb-3 border-b border-dark-border/50"
       >
         <div className="flex items-center gap-2 text-xs">
           <Users className="w-3.5 h-3.5 text-altrion-400" />
@@ -117,7 +113,7 @@ export function Signup() {
         </motion.div>
       )}
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-2.5 sm:space-y-3">
         {/* Staggered animations for form fields */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -151,25 +147,12 @@ export function Signup() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.5, duration: 0.5 }}
-          className="relative"
         >
-          <div className="relative">
-            <Input
-              label="Password"
-              type={inputType}
-              {...register('password')}
-              icon={<Lock size={18} />}
-              error={errors.password?.message}
-            />
-            <button
-              type="button"
-              onClick={togglePassword}
-              className="absolute right-12 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary transition-colors z-20"
-              aria-label={showPassword ? 'Hide password' : 'Show password'}
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
+          <PasswordInput
+            label="Password"
+            {...register('password')}
+            error={errors.password?.message}
+          />
         </motion.div>
 
         <motion.div
@@ -177,11 +160,9 @@ export function Signup() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.6, duration: 0.5 }}
         >
-          <Input
+          <PasswordInput
             label="Confirm Password"
-            type={inputType}
             {...register('confirmPassword')}
-            icon={<Lock size={18} />}
             error={errors.confirmPassword?.message}
           />
         </motion.div>
@@ -252,10 +233,38 @@ export function Signup() {
           </Button>
         </motion.div>
 
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.85, duration: 0.5 }}
+          className="flex items-center gap-3 mt-4 mb-1"
+        >
+          <div className="flex-1 border-t border-dark-border" />
+          <span className="text-sm text-text-muted font-medium">or continue with</span>
+          <div className="flex-1 border-t border-dark-border" />
+        </motion.div>
+
+        <motion.button
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.9, duration: 0.5 }}
+          type="button"
+          onClick={handleGoogleSignup}
+          disabled={oauthMutation.isPending}
+          className="h-10 sm:h-11 bg-dark-card border border-dark-border hover:border-dark-border-hover hover:bg-dark-elevated text-text-primary rounded-lg transition-all duration-200 flex items-center justify-center gap-2 font-medium text-sm sm:text-[15px] focus:outline-none focus:ring-2 focus:ring-altrion-500/30 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 w-full"
+        >
+          <img
+            src="https://www.google.com/favicon.ico"
+            alt="Google"
+            className="w-4 h-4 sm:w-[18px] sm:h-[18px]"
+          />
+          Google
+        </motion.button>
+
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.9, duration: 0.5 }}
+          transition={{ delay: 1, duration: 0.5 }}
           className="text-center text-text-secondary text-sm pt-2"
         >
           Already have an account?{' '}

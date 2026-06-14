@@ -44,7 +44,7 @@ export function Tooltip({
             className={`
               absolute z-50 px-3 py-2 text-sm text-text-primary
               bg-dark-elevated border border-dark-border rounded-lg shadow-lg
-              whitespace-nowrap pointer-events-none
+              max-w-[200px] whitespace-normal pointer-events-none
               ${positionClasses[position]}
             `}
           >

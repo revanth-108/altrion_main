@@ -24,8 +24,8 @@ describe('formatters', () => {
       expect(formatPercent(-3.25)).toBe('-3.25%');
     });
 
-    it('should format zero as positive', () => {
-      expect(formatPercent(0)).toBe('+0.00%');
+    it('should format zero as no change', () => {
+      expect(formatPercent(0)).toBe('No change');
     });
   });
 

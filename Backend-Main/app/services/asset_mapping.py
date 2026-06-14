@@ -7,11 +7,11 @@ Maps provider-specific symbols to canonical symbols.
 from typing import Optional, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-import structlog
 
 from app.models.asset_mapping import AssetMapping
+from app.core.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 
 class AssetMappingService:
@@ -21,20 +21,20 @@ class AssetMappingService:
         "coinbase": {
             "BTC": {"canonical_symbol": "BTC", "asset_class": "crypto"},
             "ETH": {"canonical_symbol": "ETH", "asset_class": "crypto"},
-            "USDC": {"canonical_symbol": "USDC", "asset_class": "cash_equivalent"},
-            "USDT": {"canonical_symbol": "USDT", "asset_class": "cash_equivalent"},
+            "USDC": {"canonical_symbol": "USDC", "asset_class": "crypto"},
+            "USDT": {"canonical_symbol": "USDT", "asset_class": "crypto"},
         },
         "plaid": {
-            "USD": {"canonical_symbol": "USDC", "asset_class": "cash_equivalent"},
-            "US DOLLAR": {"canonical_symbol": "USDC", "asset_class": "cash_equivalent"},
+            "USD": {"canonical_symbol": "USD", "asset_class": "cash_equivalent"},
+            "US DOLLAR": {"canonical_symbol": "USD", "asset_class": "cash_equivalent"},
             "BITCOIN": {"canonical_symbol": "BTC", "asset_class": "crypto"},
             "ETHEREUM": {"canonical_symbol": "ETH", "asset_class": "crypto"},
         },
         "wallet": {
             "BTC": {"canonical_symbol": "BTC", "asset_class": "crypto"},
             "ETH": {"canonical_symbol": "ETH", "asset_class": "crypto"},
-            "USDC": {"canonical_symbol": "USDC", "asset_class": "cash_equivalent"},
-            "USDT": {"canonical_symbol": "USDT", "asset_class": "cash_equivalent"},
+            "USDC": {"canonical_symbol": "USDC", "asset_class": "crypto"},
+            "USDT": {"canonical_symbol": "USDT", "asset_class": "crypto"},
             "WETH": {"canonical_symbol": "ETH", "asset_class": "crypto"},
             "WBTC": {"canonical_symbol": "BTC", "asset_class": "crypto"},
         },

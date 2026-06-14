@@ -1,14 +1,6 @@
-import type { PasswordRequirement } from '../types';
-
-export function validateEmail(email: string): boolean {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-}
-
-export function validatePassword(password: string): boolean {
-  return password.length >= 8 &&
-         /[A-Z]/.test(password) &&
-         /[0-9]/.test(password);
+export interface PasswordRequirement {
+  label: string;
+  met: boolean;
 }
 
 export function getPasswordRequirements(
@@ -24,8 +16,4 @@ export function getPasswordRequirements(
       met: password === confirmPassword && password.length > 0,
     },
   ];
-}
-
-export function validateName(name: string): boolean {
-  return name.trim().length >= 2;
 }

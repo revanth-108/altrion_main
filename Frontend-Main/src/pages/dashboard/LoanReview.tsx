@@ -11,29 +11,12 @@ import {
   ChevronUp,
   FileText,
 } from 'lucide-react';
-import { Button, Card, Header } from '../../components/ui';
+import { Button, Card } from '../../components/ui';
+import { DashboardLayout } from '../../components/layout';
 import { formatCurrency } from '../../utils';
-import { CONTAINER_VARIANTS, ITEM_VARIANTS, ROUTES } from '../../constants';
+import { CONTAINER_VARIANTS, ITEM_VARIANTS, ROUTES, PAYOUT_METHOD_LABELS } from '../../constants';
 import { useCalculateLoan } from '../../hooks';
-import type { LoanCalculateRequest } from '@/types';
-
-interface SelectedAsset {
-  name: string;
-  symbol: string;
-  amount: number;
-  value: number;
-}
-
-interface LoanReviewData {
-  loanRequest: LoanCalculateRequest;
-  selectedAssets: SelectedAsset[];
-  totalCollateral: number;
-}
-
-const BANK_LABELS: Record<string, string> = {
-  chase: 'Chase',
-  bofa: 'Bank of America',
-};
+import type { LoanReviewData } from '@/types';
 
 export function LoanReview() {
   const navigate = useNavigate();
@@ -51,6 +34,7 @@ export function LoanReview() {
   }, [loanData, navigate]);
 
   const [showSummary, setShowSummary] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const { loanRequest, selectedAssets, totalCollateral } = loanData || { 
     loanRequest: null, 
@@ -60,6 +44,7 @@ export function LoanReview() {
 
   const handleConfirm = async () => {
     if (!loanData || !loanRequest) return;
+    setSubmitError(null);
 
     try {
       // Call the loan API
@@ -73,11 +58,13 @@ export function LoanReview() {
           loanRequest: {
             months: loanRequest.months,
             payout_currency: loanRequest.payout_currency,
-            bank: loanRequest.bank,
+            payout_method: loanRequest.payout_method,
           }
         }
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Loan calculation failed';
+      setSubmitError(message);
       console.error('Loan calculation failed:', error);
     }
   };
@@ -91,16 +78,7 @@ export function LoanReview() {
   }
 
   return (
-    <div className="min-h-screen bg-dark-bg relative">
-      {/* Atmospheric background */}
-      <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-altrion-500/10 rounded-full blur-[120px] animate-pulse" style={{ animationDuration: '8s' }} />
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-accent-cyan/5 rounded-full blur-[120px] animate-pulse" style={{ animationDuration: '10s' }} />
-      </div>
-
-      <Header />
-
-      <main className="max-w-3xl mx-auto px-5 py-8">
+    <DashboardLayout maxWidth="max-w-3xl" padding="px-5 py-8">
         <motion.div
           variants={CONTAINER_VARIANTS}
           initial="hidden"
@@ -117,12 +95,9 @@ export function LoanReview() {
             >
               <AlertCircle size={36} className="text-amber-400" />
             </motion.div>
-            <h1 className="font-display text-3xl font-bold text-text-primary mb-2">
+            <h1 className="font-display text-3xl font-bold text-text-primary">
               Confirm Your Loan Application
             </h1>
-            <p className="text-text-secondary">
-              Please review the details below before submitting your application.
-            </p>
           </motion.div>
 
           {/* Loan Details Card */}
@@ -132,10 +107,7 @@ export function LoanReview() {
                 <div className="w-10 h-10 rounded-xl bg-altrion-500/20 flex items-center justify-center">
                   <Wallet size={20} className="text-altrion-400" />
                 </div>
-                <div>
-                  <h3 className="font-display text-xl font-semibold text-text-primary">Loan Details</h3>
-                  <p className="text-sm text-text-secondary">Review your loan terms</p>
-                </div>
+                <h3 className="font-display text-xl font-semibold text-text-primary">Loan Details</h3>
               </div>
 
               <div className="grid grid-cols-2 gap-4 mb-6">
@@ -158,9 +130,9 @@ export function LoanReview() {
                   </p>
                 </div>
                 <div className="p-4 bg-dark-elevated rounded-xl">
-                  <p className="text-text-muted text-xs mb-1">Bank Account</p>
+                  <p className="text-text-muted text-xs mb-1">Payout Method</p>
                   <p className="text-2xl font-bold text-text-primary">
-                    {BANK_LABELS[loanRequest?.bank || 'chase'] || loanRequest?.bank}
+                    {PAYOUT_METHOD_LABELS[loanRequest?.payout_method || 'bank_transfer'] || loanRequest?.payout_method}
                   </p>
                 </div>
               </div>
@@ -208,10 +180,7 @@ export function LoanReview() {
                   <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
                     <FileText size={20} className="text-blue-400" />
                   </div>
-                  <div className="text-left">
-                    <h3 className="font-display text-xl font-semibold text-text-primary">Loan Summary</h3>
-                    <p className="text-sm text-text-secondary">View estimated loan details</p>
-                  </div>
+                  <h3 className="font-display text-xl font-semibold text-text-primary text-left">Loan Summary</h3>
                 </div>
                 {showSummary ? (
                   <ChevronUp size={24} className="text-text-muted" />
@@ -272,9 +241,9 @@ export function LoanReview() {
                           </p>
                         </div>
                         <div className="p-3 bg-dark-elevated rounded-lg">
-                          <p className="text-xs text-text-muted mb-1">Bank Account</p>
+                          <p className="text-xs text-text-muted mb-1">Payout Method</p>
                           <p className="text-lg font-bold text-text-primary">
-                            {BANK_LABELS[loanRequest?.bank || 'chase'] || loanRequest?.bank}
+                            {PAYOUT_METHOD_LABELS[loanRequest?.payout_method || 'bank_transfer'] || loanRequest?.payout_method}
                           </p>
                         </div>
                       </div>
@@ -308,6 +277,16 @@ export function LoanReview() {
             </Card>
           </motion.div>
 
+          {submitError && (
+            <motion.div variants={ITEM_VARIANTS}>
+              <Card variant="bordered" className="bg-red-500/10 border-red-500/30">
+                <p className="text-sm text-red-300">
+                  Unable to continue: {submitError}. Check `VITE_LOAN_API_URL` and ensure the loan service is running.
+                </p>
+              </Card>
+            </motion.div>
+          )}
+
           {/* Action Buttons */}
           <motion.div variants={ITEM_VARIANTS} className="flex gap-4 justify-center pt-4">
             <Button
@@ -326,7 +305,6 @@ export function LoanReview() {
             </Button>
           </motion.div>
         </motion.div>
-      </main>
-    </div>
+    </DashboardLayout>
   );
 }

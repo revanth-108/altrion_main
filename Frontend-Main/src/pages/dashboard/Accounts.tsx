@@ -1,10 +1,19 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Landmark, Plus, RefreshCw, Wallet } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Landmark, Plus, Trash2, Wallet, X } from 'lucide-react';
 import { DashboardLayout } from '@/components/layout';
 import { Button, Card } from '@/components/ui';
+import { TransactionSyncControls } from '@/components/plaid/TransactionSyncControls';
 import { CONTAINER_VARIANTS, ITEM_VARIANTS, PLATFORM_ICONS, ROUTES, getAccountDetailRoute } from '@/constants';
-import { useConnectedPlatforms, usePortfolio, useRefreshAll } from '@/hooks';
+import {
+  useConnectedPlatforms,
+  useDisconnectPlaidItem,
+  usePlaidTransactionSyncStatus,
+  usePortfolio,
+  useSyncPlaidBalances,
+  useSyncPlaidTransactionUpdates,
+} from '@/hooks';
 import { formatCurrency, formatDate } from '@/utils';
 
 const categoryLabels = {
@@ -32,7 +41,16 @@ export function Accounts() {
   const navigate = useNavigate();
   const { data: accounts = [], isLoading } = useConnectedPlatforms();
   const { data: portfolio } = usePortfolio();
-  const refreshAll = useRefreshAll();
+  const { data: syncStatus } = usePlaidTransactionSyncStatus();
+  const refreshBalances = useSyncPlaidBalances();
+  const syncTransactions = useSyncPlaidTransactionUpdates();
+  const disconnectPlaidItem = useDisconnectPlaidItem();
+  const [disconnectTarget, setDisconnectTarget] = useState<{
+    itemId: string;
+    name: string;
+    institutionName: string | null;
+    accountCount: number;
+  } | null>(null);
 
   const accountCards = accounts.map((account) => {
     let hasPortfolioSource = false;
@@ -55,6 +73,23 @@ export function Accounts() {
     .filter((account) => account.classification === 'asset')
     .reduce((sum, account) => sum + (account.relatedValue ?? 0), 0);
 
+  const openDisconnectConfirm = (account: { itemId: string | null; name: string; institutionName: string | null }) => {
+    if (!account.itemId) return;
+    const accountCount = accountCards.filter((entry) => entry.itemId === account.itemId).length || 1;
+    setDisconnectTarget({
+      itemId: account.itemId,
+      name: account.name,
+      institutionName: account.institutionName,
+      accountCount,
+    });
+  };
+
+  const handleDisconnectConfirm = async () => {
+    if (!disconnectTarget) return;
+    await disconnectPlaidItem.mutateAsync(disconnectTarget.itemId);
+    setDisconnectTarget(null);
+  };
+
   return (
     <DashboardLayout>
       <motion.div variants={CONTAINER_VARIANTS} initial="hidden" animate="visible" className="space-y-6">
@@ -66,11 +101,14 @@ export function Accounts() {
               Open any connected account to inspect balances, account metadata, and portfolio exposure tied to that connection.
             </p>
           </div>
-          <div className="flex gap-3">
-            <Button variant="secondary" onClick={() => refreshAll.mutate()} loading={refreshAll.isPending}>
-              <RefreshCw size={16} />
-              Refresh
-            </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <TransactionSyncControls
+              hasTransactionUpdates={syncStatus?.status === 'updates_available' || Boolean(syncStatus?.hasTransactionUpdates)}
+              onRefreshBalances={() => refreshBalances.mutate(undefined)}
+              onSyncTransactions={() => syncTransactions.mutate()}
+              refreshBalancesLoading={refreshBalances.isPending}
+              syncTransactionsLoading={syncTransactions.isPending}
+            />
             <Button onClick={() => navigate(ROUTES.CONNECT_SELECT)}>
               <Plus size={16} />
               Add Account
@@ -104,13 +142,16 @@ export function Accounts() {
                   const Icon = config?.icon || (account.category === 'bank' ? Landmark : Wallet);
 
                   return (
-                    <button
+                    <div
                       key={account.id}
-                      onClick={() => navigate(getAccountDetailRoute(account.id))}
                       className="w-full px-5 py-4 text-left transition-colors hover:bg-dark-elevated/60"
                     >
                       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                        <div className="flex items-center gap-4 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => navigate(getAccountDetailRoute(account.id))}
+                          className="flex min-w-0 flex-1 items-center gap-4 text-left"
+                        >
                           <div className={`h-11 w-11 shrink-0 rounded-2xl flex items-center justify-center ${config?.color || 'bg-dark-elevated'}`}>
                             {config?.logo ? (
                               <img src={config.logo} alt={account.name} className="h-6 w-6 object-contain" />
@@ -125,9 +166,9 @@ export function Accounts() {
                               {account.mask ? ` • •••• ${account.mask}` : ''}
                             </p>
                           </div>
-                        </div>
+                        </button>
 
-                        <div className="flex items-center justify-between gap-4 md:justify-end">
+                        <div className="flex items-center justify-between gap-3 md:justify-end">
                           <div className="text-left md:text-right">
                             <p className="font-semibold text-text-primary">{formatOptionalCurrency(account.relatedValue)}</p>
                             {account.classification === 'liability' && account.relatedValue != null ? (
@@ -138,13 +179,23 @@ export function Accounts() {
                                 ? 'Sync failed'
                                 : account.lastSyncedAt
                                   ? `Synced ${formatDate(new Date(account.lastSyncedAt))}`
-                                  : 'Waiting for first sync'}
+                              : 'Waiting for first sync'}
                             </p>
                           </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openDisconnectConfirm(account)}
+                            disabled={!account.itemId || disconnectPlaidItem.isPending}
+                            className="shrink-0 border border-transparent text-text-muted hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-300"
+                          >
+                            <Trash2 size={14} />
+                            <span className="hidden sm:inline">Disconnect</span>
+                          </Button>
                           <ArrowRight size={16} className="text-text-muted shrink-0" />
                         </div>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -168,6 +219,53 @@ export function Accounts() {
           <motion.p variants={ITEM_VARIANTS} className="text-sm text-text-muted">
             Loading connected accounts...
           </motion.p>
+        )}
+
+        {disconnectTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => setDisconnectTarget(null)}
+            />
+            <div className="relative w-full max-w-lg rounded-2xl border border-dark-border bg-dark-card p-6 shadow-2xl">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-full bg-red-500/15 text-red-300">
+                    <AlertTriangle size={18} />
+                  </div>
+                  <div>
+                    <h2 className="font-display text-xl font-bold text-text-primary">Disconnect account connection?</h2>
+                    <p className="mt-2 text-sm text-text-secondary">
+                      This will disconnect the Plaid item for {disconnectTarget.institutionName || disconnectTarget.name} and hide all {disconnectTarget.accountCount} account{disconnectTarget.accountCount === 1 ? '' : 's'} tied to that connection.
+                    </p>
+                    <p className="mt-2 text-sm text-text-secondary">
+                      Your historical transactions and holdings stay in the database.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDisconnectTarget(null)}
+                  className="rounded-lg p-1.5 text-text-muted hover:bg-dark-elevated hover:text-text-primary"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+                <Button variant="ghost" onClick={() => setDisconnectTarget(null)} disabled={disconnectPlaidItem.isPending}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleDisconnectConfirm}
+                  loading={disconnectPlaidItem.isPending}
+                  className="bg-red-500 text-white hover:bg-red-600"
+                >
+                  Disconnect
+                </Button>
+              </div>
+            </div>
+          </div>
         )}
       </motion.div>
     </DashboardLayout>

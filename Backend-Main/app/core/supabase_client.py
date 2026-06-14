@@ -7,9 +7,10 @@ from app.core.database import AsyncSessionLocal
 from app.models.provider_token import ProviderToken
 from sqlalchemy import select
 from uuid import UUID
-import structlog
+from app.core.logging import get_logger
+from app.services.plaid_safe import ensure_dict
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 # Supabase client (using anon key)
 supabase: Client = None
@@ -61,11 +62,14 @@ async def store_encrypted_token(user_id: str, provider: str, token_data: dict):
 
             if existing:
                 existing.token_data = token_data
+                if hasattr(existing, "is_active"):
+                    existing.is_active = True
             else:
                 session.add(ProviderToken(
                     user_id=user_id_uuid,
                     provider=provider,
                     token_data=token_data,
+                    is_active=True,
                 ))
 
             await session.commit()
@@ -79,7 +83,7 @@ async def store_encrypted_token(user_id: str, provider: str, token_data: dict):
             raise
 
 
-async def get_encrypted_token(user_id: str, provider: str) -> dict | None:
+async def get_encrypted_token(user_id: str, provider: str, item_id: str | None = None) -> dict | None:
     """Retrieve encrypted provider token from database"""
     async with AsyncSessionLocal() as session:
         try:
@@ -89,9 +93,28 @@ async def get_encrypted_token(user_id: str, provider: str) -> dict | None:
                 ProviderToken.provider == provider,
             )
             result = await session.execute(stmt)
-            existing = result.scalar_one_or_none()
-            if existing:
-                return existing.token_data
+            rows = result.scalars().all()
+            if not rows:
+                return None
+
+            if item_id:
+                exact = next((row for row in rows if row.item_id == item_id), None)
+                if exact:
+                    return ensure_dict(exact.token_data)
+                legacy = next((row for row in rows if row.item_id is None), None)
+                if legacy:
+                    return ensure_dict(legacy.token_data)
+                logger.warning("No provider token matched requested item", user_id=user_id, provider=provider, item_id=item_id)
+                return None
+
+            if len(rows) == 1:
+                return ensure_dict(rows[0].token_data)
+
+            legacy = next((row for row in rows if row.item_id is None), None)
+            if legacy:
+                return ensure_dict(legacy.token_data)
+
+            logger.warning("Multiple provider tokens found; item_id required", user_id=user_id, provider=provider, token_count=len(rows))
             return None
         except Exception as e:
             logger.error("Failed to retrieve encrypted token", error=str(e), user_id=user_id, provider=provider)
@@ -100,8 +123,8 @@ async def get_encrypted_token(user_id: str, provider: str) -> dict | None:
             return None
 
 
-async def delete_encrypted_token(user_id: str, provider: str):
-    """Delete encrypted provider token"""
+async def delete_encrypted_token(user_id: str, provider: str, item_id: str | None = None):
+    """Delete encrypted provider token."""
     async with AsyncSessionLocal() as session:
         try:
             user_id_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
@@ -109,13 +132,22 @@ async def delete_encrypted_token(user_id: str, provider: str):
                 ProviderToken.user_id == user_id_uuid,
                 ProviderToken.provider == provider,
             )
+            if item_id is not None:
+                stmt = stmt.where(ProviderToken.item_id == item_id)
             result = await session.execute(stmt)
-            existing = result.scalar_one_or_none()
-            if existing:
+            existing_rows = result.scalars().all()
+            for existing in existing_rows:
                 await session.delete(existing)
+            if existing_rows:
                 await session.commit()
-            logger.info("Deleted encrypted token", user_id=user_id, provider=provider)
+            logger.info(
+                "Deleted encrypted token",
+                user_id=user_id,
+                provider=provider,
+                item_id=item_id,
+                deleted_count=len(existing_rows),
+            )
         except Exception as e:
             await session.rollback()
-            logger.error("Failed to delete encrypted token", error=str(e), user_id=user_id, provider=provider)
+            logger.error("Failed to delete encrypted token", error=str(e), user_id=user_id, provider=provider, item_id=item_id)
             raise

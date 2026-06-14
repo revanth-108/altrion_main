@@ -12,49 +12,54 @@ export const authKeys = {
 
 export function useLogin() {
   const navigate = useNavigate();
-  const { login: storeLogin, setLoading, setError } = useAuthStore();
+  const { login: storeLogin, setJustSignedUp } = useAuthStore();
 
   return useMutation({
     mutationFn: (credentials: LoginFormData) => authService.login(credentials),
-    onMutate: () => {
-      setLoading(true);
-      setError(null);
-    },
     onSuccess: (data) => {
+      if (!data.tokens?.accessToken) {
+        navigate(ROUTES.LOGIN, { replace: true });
+        return;
+      }
       storeLogin(data.user, data.tokens.accessToken);
+      const pendingOnboardingEmail = localStorage.getItem('altrion:pendingOnboardingEmail');
+      if (pendingOnboardingEmail === data.user.email.trim().toLowerCase()) {
+        localStorage.removeItem('altrion:pendingOnboardingEmail');
+        setJustSignedUp(true);
+        navigate(ROUTES.ONBOARDING, { replace: true });
+        return;
+      }
       navigate(ROUTES.DASHBOARD);
-    },
-    onError: (error: Error) => {
-      setError(error.message);
-    },
-    onSettled: () => {
-      setLoading(false);
     },
   });
 }
 
 export function useSignup() {
   const navigate = useNavigate();
-  const { login: storeLogin, setLoading, setError, setJustSignedUp } = useAuthStore();
+  const { login: storeLogin, setJustSignedUp } = useAuthStore();
 
   return useMutation({
     mutationFn: (data: SignupFormData) => authService.signup(data),
-    onMutate: () => {
-      setLoading(true);
-      setError(null);
-    },
     onSuccess: (data) => {
-      storeLogin(data.user, data.tokens.accessToken);
       setJustSignedUp(true);
-      // Use replace to prevent PublicOnlyRoute from interfering
-      // Navigate with state to indicate this is a fresh signup
+
+      if (data.emailVerificationRequired || !data.tokens?.accessToken) {
+        localStorage.setItem(
+          'altrion:pendingOnboardingEmail',
+          data.user.email.trim().toLowerCase(),
+        );
+        navigate(ROUTES.LOGIN, {
+          replace: true,
+          state: {
+            emailVerificationRequired: true,
+            email: data.user.email,
+          },
+        });
+        return;
+      }
+
+      storeLogin(data.user, data.tokens.accessToken);
       navigate(ROUTES.ONBOARDING, { replace: true });
-    },
-    onError: (error: Error) => {
-      setError(error.message);
-    },
-    onSettled: () => {
-      setLoading(false);
     },
   });
 }
@@ -69,7 +74,6 @@ export function useLogout() {
     onSuccess: () => {
       storeLogout();
       queryClient.clear();
-      // Clear onboarding data on logout
       localStorage.removeItem('altrion-displayName');
       localStorage.removeItem('altrion-connected-accounts');
       navigate(ROUTES.LOGIN);
@@ -85,9 +89,8 @@ export function useForgotPassword() {
 
 export function useOAuthLogin() {
   return useMutation({
-    mutationFn: (provider: 'google' | 'github') => authService.oauthLogin(provider),
+    mutationFn: () => authService.oauthLogin('google'),
     onSuccess: (url) => {
-      // Redirect to OAuth provider
       window.location.href = url;
     },
   });

@@ -4,9 +4,11 @@ Redis client for temporary data storage
 import redis.asyncio as redis
 from app.core.config import settings
 import json
-import structlog
+from app.core.logging import get_logger
+from app.core.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
+logger = get_logger()
 
 # Global redis client
 redis_client: redis.Redis = None

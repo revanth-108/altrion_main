@@ -1,59 +1,75 @@
-export type ChartPeriod = '1H' | '24H' | '7D' | '1M' | '1Y';
+export type ChartPeriod = '1H' | '24H' | '7D' | '1M' | '1Y' | '5Y' | 'ALL';
 
 export interface ChartDataPoint {
   value: number;
   label: string;
 }
 
-interface PeriodConfig {
-  points: number;
-  variance: number;
-  labels: string[];
-}
-
-const PERIOD_CONFIGS: Record<ChartPeriod, PeriodConfig> = {
-  '1H': {
-    points: 12,
-    variance: 0.002,
-    labels: ['5m', '10m', '15m', '20m', '25m', '30m', '35m', '40m', '45m', '50m', '55m', 'Now'],
-  },
-  '24H': {
-    points: 24,
-    variance: 0.01,
-    labels: Array.from({ length: 24 }, (_, i) => `${i}h`),
-  },
-  '7D': {
-    points: 7,
-    variance: 0.03,
-    labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-  },
-  '1M': {
-    points: 30,
-    variance: 0.05,
-    labels: Array.from({ length: 30 }, (_, i) => `${i + 1}`),
-  },
-  '1Y': {
-    points: 12,
-    variance: 0.15,
-    labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
-  },
+const PERIOD_POINT_COUNTS: Record<ChartPeriod, number> = {
+  '1H': 13,
+  '24H': 25,
+  '7D': 15,
+  '1M': 31,
+  '1Y': 12,
+  '5Y': 12,
+  ALL: 12,
 };
 
-export function generateChartData(baseValue: number, period: ChartPeriod): ChartDataPoint[] {
-  const config = PERIOD_CONFIGS[period];
-  const dataPoints: ChartDataPoint[] = [];
-  let currentValue = baseValue * 0.95;
+const PERIOD_LABELS: Record<ChartPeriod, Intl.DateTimeFormatOptions> = {
+  '1H': { hour: '2-digit', minute: '2-digit' },
+  '24H': { hour: '2-digit' },
+  '7D': { weekday: 'short' },
+  '1M': { month: 'short', day: 'numeric' },
+  '1Y': { month: 'short' },
+  '5Y': { month: 'short', year: '2-digit' },
+  ALL: { month: 'short', year: '2-digit' },
+};
 
-  for (let i = 0; i < config.points; i++) {
-    const change = (Math.random() - 0.45) * baseValue * config.variance;
-    currentValue += change;
-    dataPoints.push({
-      value: currentValue,
-      label: config.labels[i],
+function getLabelForPoint(date: Date, period: ChartPeriod): string {
+  return new Intl.DateTimeFormat('en-US', PERIOD_LABELS[period]).format(date);
+}
+
+function getStepMs(period: ChartPeriod): number {
+  switch (period) {
+    case '1H':
+      return 5 * 60 * 1000;
+    case '24H':
+      return 60 * 60 * 1000;
+    case '7D':
+      return 12 * 60 * 60 * 1000;
+    case '1M':
+      return 24 * 60 * 60 * 1000;
+    case '1Y':
+      return 30 * 24 * 60 * 60 * 1000;
+    case '5Y':
+    case 'ALL':
+      return 90 * 24 * 60 * 60 * 1000;
+  }
+}
+
+export function generateChartData(baseValue: number, period: ChartPeriod): ChartDataPoint[] {
+  const pointCount = PERIOD_POINT_COUNTS[period];
+  const now = Date.now();
+  const stepMs = getStepMs(period);
+  const values: ChartDataPoint[] = [];
+  const volatility = Math.max(Math.abs(baseValue) * 0.02, 0.5);
+  const drift = Math.max(Math.abs(baseValue) * 0.01, 0.25);
+
+  for (let index = 0; index < pointCount; index += 1) {
+    const progress = pointCount <= 1 ? 0 : index / (pointCount - 1);
+    const offset = progress - 0.5;
+    const wave = Math.sin(progress * Math.PI * 3) * volatility;
+    const trend = offset * drift;
+    const value = Math.max(0.01, baseValue + wave + trend);
+    const timestamp = new Date(now - (pointCount - index - 1) * stepMs);
+
+    values.push({
+      value,
+      label: getLabelForPoint(timestamp, period),
     });
   }
 
-  return dataPoints;
+  return values;
 }
 
 export function normalizeChartY(value: number, minValue: number, maxValue: number): number {
@@ -62,5 +78,6 @@ export function normalizeChartY(value: number, minValue: number, maxValue: numbe
 }
 
 export function normalizeChartX(index: number, totalPoints: number): number {
-  return (index / (totalPoints - 1)) * 800;
+  const padding = 10;
+  return padding + (index / (totalPoints - 1)) * (800 - padding * 2);
 }

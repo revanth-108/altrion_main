@@ -33,7 +33,7 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
         </div>
 
         {/* Centered Content Container */}
-        <div className="relative z-10 w-full max-w-xl flex flex-col items-center text-center space-y-2">
+        <div className="relative z-10 w-full max-w-xl flex flex-col items-center text-center space-y-6">
           {/* Logo */}
           <motion.div
             initial={{ opacity: 0, y: -20 }}
@@ -45,12 +45,12 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
           </motion.div>
 
           {/* Main Content */}
-          <div className="space-y-8">
+          <div>
             <motion.h2
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2, duration: 0.7 }}
-              className="font-display text-5xl lg:text-6xl font-bold leading-tight tracking-tight"
+              className="font-display text-5xl lg:text-6xl font-black leading-[1.1] tracking-tight"
             >
               Unified Finance.
               <br />
@@ -58,14 +58,6 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
                 Intelligent Risk.
               </span>
             </motion.h2>
-            <motion.p
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.35, duration: 0.7 }}
-              className="text-text-secondary text-lg leading-relaxed font-light max-w-lg mx-auto"
-            >
-              Track portfolios, issue loans, and protect your assets with AI-powered compliance—all in one platform.
-            </motion.p>
           </div>
 
           {/* Features */}
@@ -73,7 +65,7 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.5, duration: 0.6 }}
-            className="flex flex-wrap items-center justify-center gap-6 text-base text-text-muted mt-4"
+            className="flex flex-wrap items-center justify-center gap-8 text-base text-text-muted"
           >
             <span className="flex items-center gap-2.5 group cursor-default">
               <div className="w-2 h-2 rounded-full bg-altrion-500 group-hover:scale-125 transition-transform" />
@@ -92,7 +84,7 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
       </div>
 
       {/* Right side - Form */}
-      <div className="w-full lg:w-1/2 flex items-center justify-center p-6 lg:p-8 relative">
+      <div className="w-full lg:w-1/2 flex items-center justify-center px-5 py-6 sm:p-6 lg:p-8 relative">
         {/* Subtle background pattern for form side */}
         <div className="absolute inset-0 bg-dots-pattern opacity-20" />
 
@@ -103,13 +95,13 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
           className="w-full max-w-md relative z-10"
         >
           {/* Mobile logo */}
-          <div className="lg:hidden mb-6">
-            <Logo size="md" />
+          <div className="lg:hidden mb-4">
+            <Logo size="sm" />
           </div>
 
           {/* Form header */}
-          <div className="mb-5">
-            <h1 className="font-display text-3xl lg:text-4xl font-bold text-text-primary mb-2 tracking-tight leading-tight">
+          <div className="mb-4">
+            <h1 className="font-display text-2xl sm:text-3xl lg:text-5xl font-bold text-text-primary mb-2 tracking-tight leading-tight">
               {title}
             </h1>
             {subtitle && (

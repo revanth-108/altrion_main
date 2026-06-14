@@ -4,12 +4,12 @@ Wallet provider adapter (read-only, public address based)
 from typing import List, Dict, Any
 from decimal import Decimal
 import httpx
-import structlog
 
 from app.services.providers.base import BaseProviderAdapter
 from app.core.config import settings
+from app.core.logging import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 
 class WalletAdapter(BaseProviderAdapter):

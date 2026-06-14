@@ -16,7 +16,7 @@ class CanonicalHolding(BaseModel):
     schema_version: Literal["v1"] = "v1"
     user_id: str
     account_id: str
-    canonical_symbol: str  # BTC, ETH, USDC
+    canonical_symbol: str  # BTC, ETH, USD
     asset_class: Literal["crypto", "cash_equivalent", "equity"]
     quantity: Decimal  # Full precision decimal
     source: Literal["coinbase", "plaid", "wallet"]

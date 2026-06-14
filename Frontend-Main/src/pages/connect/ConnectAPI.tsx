@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Check, X, Loader2, ArrowRight, Lock, Trophy, Star, Sparkles } from 'lucide-react';
 import { Button, Card, Input } from '../../components/ui';
-import { DashboardLayout } from '../../components/layout';
+import { ConnectionSetupLayout } from '../../components/layout';
 import { PLATFORM_ICONS, ROUTES } from '../../constants';
 import { useConnectionStatus } from '../../hooks';
 import { useState, useEffect } from 'react';
@@ -12,6 +12,7 @@ import EthereumProvider from '@walletconnect/ethereum-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePlaidLink } from 'react-plaid-link';
 import type { PlatformCredentials } from '@/schemas';
+import { ConnectionSuccessNotice } from './ConnectionSuccessNotice';
 
 const CONFETTI_COLORS = [
   '#10b981',
@@ -61,6 +62,8 @@ const Confetti = () => (
 export function ConnectAPI() {
   const navigate = useNavigate();
   const location = useLocation();
+  const isOnboarding =
+    sessionStorage.getItem('altrion:onboardingFlow') === 'true';
   const selectedPlatformIds = ((location.state?.platforms as string[]) || [])
     .filter((platformId) => platformId === 'plaid');
   const connectionPlatformIds = selectedPlatformIds.length > 0 ? selectedPlatformIds : ['plaid'];
@@ -74,6 +77,7 @@ export function ConnectAPI() {
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
   const [plaidToken, setPlaidToken] = useState<string | null>(null);
   const [plaidError, setPlaidError] = useState<string | null>(null);
+  const [plaidConnected, setPlaidConnected] = useState(false);
   const queryClient = useQueryClient();
   const { data: platformGroups } = usePlatforms();
   const platforms = platformGroups || { crypto: [], banks: [], brokers: [] };
@@ -225,6 +229,8 @@ export function ConnectAPI() {
           });
           await queryClient.invalidateQueries({ queryKey: ['plaid'] });
           await queryClient.invalidateQueries({ queryKey: ['portfolio'] });
+          localStorage.removeItem('plaid_link_token');
+          setPlaidConnected(true);
         }
       } catch (error) {
         console.error('Plaid token exchange failed', error);
@@ -267,6 +273,13 @@ export function ConnectAPI() {
 
   // Show confetti only if at least one account was connected successfully
   const showCelebration = allConnectionsCompleted && successCount > 0;
+  const connectionSucceeded = plaidConnected || showCelebration;
+  const successDestination = isOnboarding
+    ? ROUTES.CONNECT_CRYPTO
+    : ROUTES.DASHBOARD;
+  const successDestinationLabel = isOnboarding
+    ? 'the next setup step'
+    : 'your dashboard';
 
   // Save connected accounts to localStorage when connections complete
   useEffect(() => {
@@ -292,15 +305,15 @@ export function ConnectAPI() {
     }
   }, [allConnectionsCompleted, successCount, navigate]);
 
-  // Auto-navigate to crypto upload step after successful connections
+  // Keep the success confirmation visible briefly before continuing.
   useEffect(() => {
-    if (allConnectionsCompleted && successCount > 0) {
+    if (connectionSucceeded) {
       const timer = setTimeout(() => {
-        navigate(ROUTES.CONNECT_CRYPTO);
-      }, 3000);
+        navigate(successDestination, { replace: true });
+      }, 1800);
       return () => clearTimeout(timer);
     }
-  }, [allConnectionsCompleted, successCount, navigate]);
+  }, [connectionSucceeded, navigate, successDestination]);
 
   useEffect(() => {
     if (isOAuthReturn && plaidReady) {
@@ -309,8 +322,21 @@ export function ConnectAPI() {
   }, [isOAuthReturn, plaidReady, openPlaid]);
 
   return (
-    <DashboardLayout>
+    <ConnectionSetupLayout
+      backTo={ROUTES.CONNECT_SELECT}
+      backLabel="Back to account options"
+    >
       <div>
+        {plaidConnected && (
+          <div className="mb-6">
+            <ConnectionSuccessNotice
+              title="Bank account connected"
+              message="Your account was added securely and your financial data is ready to sync."
+              destinationLabel={successDestinationLabel}
+            />
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left Sidebar - Selected Platforms */}
           <div className="lg:col-span-1">
@@ -473,7 +499,7 @@ export function ConnectAPI() {
 
                     {/* Action Buttons */}
                     <div className="flex flex-col gap-3">
-                      <div className="flex gap-3">
+                      <div className="flex flex-col gap-3 sm:flex-row">
                         <div className="flex-1">
                           <Button
                             size="lg"
@@ -507,6 +533,16 @@ export function ConnectAPI() {
                             )}
                           </Button>
                         </div>
+                        {isOnboarding && isPlaid && (
+                          <Button
+                            variant="secondary"
+                            size="lg"
+                            onClick={() => navigate(ROUTES.CONNECT_CRYPTO)}
+                          >
+                            Skip bank connection
+                            <ArrowRight size={18} />
+                          </Button>
+                        )}
                         {!isWallet && !isPlaid && (() => {
                           const conn = connections.find(c => c.platformId === selectedPlatform.id);
                           return conn?.status === 'error' ? (
@@ -638,8 +674,8 @@ export function ConnectAPI() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 1 }}
                 >
-                  <Button size="lg" onClick={() => navigate(ROUTES.CONNECT_CRYPTO)}>
-                    Go to Dashboard
+                  <Button size="lg" onClick={() => navigate(successDestination, { replace: true })}>
+                    {isOnboarding ? 'Continue to PDF import' : 'Open dashboard'}
                     <ArrowRight size={18} />
                   </Button>
                 </motion.div>
@@ -648,6 +684,6 @@ export function ConnectAPI() {
           )}
         </AnimatePresence>
       </div>
-    </DashboardLayout>
+    </ConnectionSetupLayout>
   );
 }

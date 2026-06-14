@@ -1,8 +1,20 @@
-import type { Portfolio, Asset, LoanEligibility } from '@/types';
-import { mockPortfolio, mockLoanEligibility } from '@/mock/data';
+import type { Portfolio, Asset, LoanEligibility, PortfolioHealth, HealthHistoryResponse, AllocationInsights, AssetInsight } from '@/types';
+import type { ChartPeriod } from '@/utils';
+import { mockLoanEligibility } from '@/mock/data';
 import { api } from './api';
 
-const useMockPortfolio = import.meta.env.VITE_USE_MOCK_PORTFOLIO === 'true';
+const simulateDelay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const toSafeNumber = (value: unknown, fallback: number = 0): number => {
+  const parsed = typeof value === 'number' ? value : parseFloat(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const toOptionalNumber = (value: unknown): number | null => {
+  if (value == null) return null;
+  const parsed = typeof value === 'number' ? value : parseFloat(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+};
 
 // Backend response types
 interface BackendAsset {
@@ -25,7 +37,21 @@ interface BackendAsset {
 interface BackendPortfolioResponse {
   schema_version: string;
   total_value: string;
+  portfolio_value?: string;
+  total_assets?: string;
+  total_liabilities?: string;
+  liabilities_total?: string;
+  net_worth?: string;
+  change_type?: '24h' | 'since_last' | 'tracking_started';
+  change_value?: number | null;
+  change_pct?: number | null;
+  change_since_last_value?: number | null;
+  change_since_last_pct?: number | null;
   change_24h: number | null;
+  change_24h_pct?: number | null;
+  change_24h_value?: number | null;
+  last_synced_at?: string | null;
+  refreshed_at?: string | null;
   assets: BackendAsset[];
   categories: {
     crypto: string;
@@ -40,27 +66,100 @@ interface BackendPortfolioResponse {
   }>;
 }
 
+const ASSET_NAME_FALLBACKS: Record<string, string> = {
+  BTC: 'Bitcoin',
+  USDC: 'USD Coin',
+};
+
+const isGarbageAssetLabel = (value: string): boolean => {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (/^[0-9a-f]{16,}$/i.test(trimmed)) return true;
+  if (/^0x[0-9a-f]{8,}$/i.test(trimmed)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) return true;
+  if (trimmed.length > 32 && !/\s/.test(trimmed)) return true;
+  // Plaid security IDs: uppercase alphanumeric, 12+ chars, no vowel-pattern words
+  if (/^[A-Z0-9]{12,}$/.test(trimmed)) return true;
+  return false;
+};
+
+const cleanSymbol = (symbol: string): string => {
+  if (isGarbageAssetLabel(symbol)) return 'UNKNOWN';
+  return symbol.toUpperCase();
+};
+
+const cleanAssetName = (symbol: string, rawName: string): string => {
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const fallback = ASSET_NAME_FALLBACKS[normalizedSymbol];
+  const trimmedName = rawName.trim();
+
+  if (!trimmedName) {
+    return fallback ?? 'Unlabeled Asset';
+  }
+
+  if (trimmedName.toUpperCase() === normalizedSymbol) {
+    return fallback ?? normalizedSymbol;
+  }
+
+  if (isGarbageAssetLabel(trimmedName)) {
+    return fallback ?? 'Custom Asset';
+  }
+
+  const cleaned = trimmedName
+    .replace(/^0x/i, '')
+    .replace(/[_:-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!cleaned || isGarbageAssetLabel(cleaned)) {
+    return fallback ?? 'Custom Asset';
+  }
+
+  return cleaned
+    .split(' ')
+    .map((part) => (part.length <= 5 && /^[A-Z0-9]+$/.test(part) ? part : part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()))
+    .join(' ');
+};
+
 // Transform backend response to frontend format
 const transformPortfolio = (backendData: BackendPortfolioResponse): Portfolio => {
   const assets: Asset[] = backendData.assets.map((asset, index) => ({
-    id: `asset-${asset.symbol}-${index}`,
-    symbol: asset.symbol,
-    name: asset.name,
-    amount: parseFloat(asset.quantity),
-    value: parseFloat(asset.value_usd),
-    price: parseFloat(asset.price_usd),
-    change24h: asset.change_24h || 0,
+    id: `asset-${asset.symbol}-${asset.asset_class}-${index}`,
+    symbol: cleanSymbol(asset.symbol),
+    name: cleanAssetName(asset.symbol, asset.name),
+    amount: toSafeNumber(asset.quantity),
+    value: toSafeNumber(asset.value_usd),
+    price: toSafeNumber(asset.price_usd),
+    change24h: toSafeNumber(asset.change_24h),
     platform: asset.sources.map(s => s.source).join(', '),
-    type: asset.asset_class === 'crypto' ? 'crypto' : asset.asset_class === 'equity' ? 'stock' : 'stablecoin',
+    type: asset.asset_class === 'cash_equivalent' ? 'cash' : asset.asset_class === 'crypto' ? 'crypto' : 'stock',
+    sources: asset.sources.map((source) => ({
+      source: source.source,
+      accountId: source.account_id,
+      accountName: source.account_name,
+      quantity: toSafeNumber(source.quantity),
+      value: toSafeNumber(source.value_usd),
+    })),
   }));
 
-  const parsedTotal = parseFloat(backendData.total_value);
+  const parsedTotal = toSafeNumber(backendData.total_value);
   const computedTotal = assets.reduce((sum, asset) => sum + asset.value, 0);
   const totalValue = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : computedTotal;
 
   return {
     totalValue,
-    change24h: backendData.change_24h || 0,
+    portfolioValue: toSafeNumber(backendData.portfolio_value ?? backendData.total_value),
+    totalAssets: toSafeNumber(backendData.total_assets ?? backendData.portfolio_value ?? backendData.total_value),
+    totalLiabilities: toSafeNumber(backendData.total_liabilities ?? backendData.liabilities_total),
+    liabilitiesTotal: toSafeNumber(backendData.liabilities_total ?? backendData.total_liabilities),
+    netWorth: toSafeNumber(backendData.net_worth, totalValue),
+    changeType: backendData.change_type ?? 'tracking_started',
+    changeValue: toOptionalNumber(backendData.change_value),
+    changePct: toOptionalNumber(backendData.change_pct),
+    changeSinceLastValue: toOptionalNumber(backendData.change_since_last_value),
+    changeSinceLastPct: toOptionalNumber(backendData.change_since_last_pct),
+    change24h: toOptionalNumber(backendData.change_24h_pct ?? backendData.change_24h),
+    lastSyncedAt: backendData.last_synced_at ?? backendData.refreshed_at ?? null,
     assets,
   };
 };
@@ -70,28 +169,16 @@ export const portfolioService = {
    * Fetch user's complete portfolio
    */
   async getPortfolio(): Promise<Portfolio> {
-    try {
-      const { data } = await api.get<BackendPortfolioResponse>('/portfolio');
-      return transformPortfolio(data);
-    } catch (error) {
-      console.error('Failed to fetch portfolio:', error);
-      if (useMockPortfolio) {
-        return mockPortfolio;
-      }
-      throw error;
-    }
+    const { data } = await api.get<BackendPortfolioResponse>('/portfolio');
+    return transformPortfolio(data);
   },
 
   /**
    * Fetch a specific asset by ID
    */
   async getAsset(assetId: string): Promise<Asset | null> {
-    // TODO: Replace with real API call
-    // const { data } = await api.get<Asset>(`/portfolio/assets/${assetId}`);
-    // return data;
-
-    await simulateDelay(300);
-    return mockPortfolio.assets.find((a) => a.id === assetId) || null;
+    const { data } = await api.get<Asset>(`/portfolio/assets/${assetId}`);
+    return data;
   },
 
   /**
@@ -110,39 +197,33 @@ export const portfolioService = {
    * Get historical portfolio data for charts
    */
   async getPortfolioHistory(
-    period: '1H' | '24H' | '7D' | '1M' | '1Y'
+    period: ChartPeriod
   ): Promise<{ timestamp: number; value: number }[]> {
-    // TODO: Replace with real API call
-    // const { data } = await api.get<HistoryData[]>('/portfolio/history', {
-    //   params: { period },
-    // });
-    // return data;
+    try {
+      const backendPeriod = period === '5Y' || period === 'ALL' ? '1Y' : period;
+      const { data } = await api.get<{
+        schema_version: string;
+        period: string;
+        data: Array<{ timestamp: string; value: number }>;
+      }>('/portfolio/history', { params: { period: backendPeriod } });
 
-    await simulateDelay(400);
-    
-    // Generate mock historical data
-    const now = Date.now();
-    const periods: Record<string, { count: number; interval: number }> = {
-      '1H': { count: 12, interval: 5 * 60 * 1000 },
-      '24H': { count: 24, interval: 60 * 60 * 1000 },
-      '7D': { count: 7, interval: 24 * 60 * 60 * 1000 },
-      '1M': { count: 30, interval: 24 * 60 * 60 * 1000 },
-      '1Y': { count: 12, interval: 30 * 24 * 60 * 60 * 1000 },
-    };
-
-    const { count, interval } = periods[period];
-    const baseValue = mockPortfolio.totalValue;
-
-    return Array.from({ length: count }, (_, i) => ({
-      timestamp: now - (count - 1 - i) * interval,
-      value: baseValue * (0.95 + Math.random() * 0.1),
-    }));
+      if (data.data && data.data.length > 0) {
+        return data.data.map(point => ({
+          timestamp: new Date(point.timestamp).getTime(),
+          value: point.value,
+        }));
+      }
+      return [];
+    } catch {
+      // Backend not available — let CoinGecko estimate take over
+      return [];
+    }
   },
 
   /**
    * Refresh portfolio data from connected platforms
    */
-  async refreshPortfolio(): Promise<{ portfolio: Portfolio; warnings: Array<{ type: string; message: string }> }> {
+  async refreshPortfolio(): Promise<{ portfolio: Portfolio; refreshedAt: string; warnings: Array<{ type: string; message: string }> }> {
     try {
       const { data: refreshData } = await api.post<{
         schema_version: string;
@@ -167,7 +248,11 @@ export const portfolioService = {
       ];
       
       return {
-        portfolio: transformPortfolio(data),
+        portfolio: {
+          ...transformPortfolio(data),
+          lastSyncedAt: refreshData.refreshed_at,
+        },
+        refreshedAt: refreshData.refreshed_at,
         warnings: allWarnings,
       };
     } catch (error) {
@@ -177,9 +262,44 @@ export const portfolioService = {
   },
 
   /**
+   * Get portfolio health score (AFHS)
+   */
+  async getPortfolioHealth(): Promise<PortfolioHealth> {
+    const { data } = await api.get<PortfolioHealth>('/portfolio/health');
+    return data;
+  },
+
+  /**
+   * Get AFHS score history
+   */
+  async getHealthHistory(days: number = 90): Promise<HealthHistoryResponse> {
+    const { data } = await api.get<HealthHistoryResponse>('/portfolio/health/history', {
+      params: { days: String(days) },
+    });
+    return data;
+  },
+
+  async getAllocationInsights(): Promise<AllocationInsights> {
+    const { data } = await api.get<AllocationInsights>('/portfolio/allocation-insights');
+    return data;
+  },
+
+  async getAccountAllocationInsights(accountId: string): Promise<AllocationInsights> {
+    const { data } = await api.get<AllocationInsights>(`/portfolio/accounts/${accountId}/allocation-insights`);
+    return data;
+  },
+
+  async getAssetInsight(bucket: 'crypto' | 'stocks' | 'cash', symbol: string): Promise<AssetInsight> {
+    const { data } = await api.get<AssetInsight>(`/portfolio/assets/${bucket}/${symbol}/insights`);
+    return data;
+  },
+
+  /**
    * Apply for a loan
    */
   async applyForLoan(_amount: number, _collateralAssetIds: string[]): Promise<{ applicationId: string }> {
+    void _amount;
+    void _collateralAssetIds;
     // TODO: Replace with real API call
     // const { data } = await api.post('/loans/apply', { amount, collateralAssetIds });
     // return data;

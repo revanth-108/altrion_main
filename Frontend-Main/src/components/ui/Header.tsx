@@ -1,31 +1,43 @@
-import { Bell, Settings, LogOut } from 'lucide-react';
-import { Button } from './Button';
+import { Menu } from 'lucide-react';
 import { Logo } from './Logo';
 import { ThemeToggle } from './ThemeToggle';
-import { useLogout } from '../../hooks';
+import { TextHoverEffect } from './text-hover-effect';
+import { GlobalAssetSearch } from './GlobalAssetSearch';
 
-export function Header() {
-  const logoutMutation = useLogout();
+interface HeaderProps {
+  onMenuToggle?: () => void;
+}
 
+export function Header({ onMenuToggle }: HeaderProps) {
   return (
-    <nav className="header-nav border-b border-dark-border bg-dark-card/80 backdrop-blur-lg sticky top-0 z-50">
-      <div className="max-w-7xl mx-auto px-5 py-1.5">
-        <div className="flex items-center justify-between">
-          <Logo size="md" variant="icon" />
+    <nav className="relative header-nav border-b border-white/8 bg-dark-bg/70 backdrop-blur-xl">
+      <div className="px-4 lg:px-6">
+        <div className="flex h-12 items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            {onMenuToggle && (
+              <button
+                onClick={onMenuToggle}
+                className="lg:hidden p-1.5 rounded-xl text-text-secondary hover:bg-dark-elevated hover:text-text-primary transition-colors"
+              >
+                <Menu size={18} />
+              </button>
+            )}
+            <Logo size="sm" variant="icon" />
+          </div>
 
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" size="sm">
-              <Bell size={18} />
-            </Button>
-            <Button variant="ghost" size="sm">
-              <Settings size={18} />
-            </Button>
-            <div className="w-px h-6 bg-dark-border" />
+          <div className="absolute left-1/2 -translate-x-1/2 hidden md:block" style={{ top: 0, bottom: 0, width: '260px', overflow: 'hidden' }}>
+            <TextHoverEffect
+              text="ALTRION"
+              mainStrokeColor="rgba(229,229,229,0.4)"
+              hoverStrokeColor="#00c980"
+              fillColor="rgba(0, 201, 128, 0.8)"
+              strokeWidth={1.5}
+            />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <GlobalAssetSearch />
             <ThemeToggle />
-            <div className="w-px h-6 bg-dark-border" />
-            <Button variant="ghost" size="sm" onClick={() => logoutMutation.mutate()}>
-              <LogOut size={18} />
-            </Button>
           </div>
         </div>
       </div>

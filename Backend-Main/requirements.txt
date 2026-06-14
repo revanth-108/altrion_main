@@ -20,6 +20,7 @@ hiredis==2.3.2
 httpx
 aiohttp==3.9.1
 
+
 # Plaid integration
 plaid-python==9.8.0
 
@@ -41,8 +42,20 @@ cryptography>=42.0.4
 python-dateutil==2.8.2
 pytz==2024.1
 
+# Numerical computation (Monte Carlo simulation)
+numpy>=1.26.0
+
 # CoinMarketCap API (for pricing)
 requests==2.31.0
+
+# Groq AI (for loan risk tier classification)
+groq
+
+# Anthropic Claude (for PDF statement parsing)
+anthropic
+
+# PDF parsing (for portfolio statement uploads)
+pdfplumber==0.11.4
 
 # Logging
 structlog==24.1.0

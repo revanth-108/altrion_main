@@ -10,23 +10,11 @@ import {
   Shield,
   Wallet,
 } from 'lucide-react';
-import { Button, Card, Header } from '../../components/ui';
+import { Button, Card } from '../../components/ui';
+import { DashboardLayout } from '../../components/layout';
 import { formatCurrency } from '../../utils';
 import { CONTAINER_VARIANTS, ITEM_VARIANTS, ROUTES } from '../../constants';
-import type { LoanCalculateResponse } from '@/types';
-
-interface SelectedAsset {
-  name: string;
-  symbol: string;
-  amount: number;
-  value: number;
-}
-
-interface LoanConfirmationData {
-  loanResponse: LoanCalculateResponse;
-  selectedAssets: SelectedAsset[];
-  applicationId?: string;
-}
+import type { LoanConfirmationData } from '@/types';
 
 export function LoanConfirmation() {
   const navigate = useNavigate();
@@ -76,16 +64,7 @@ export function LoanConfirmation() {
   const summary = loanResponse.summary;
 
   return (
-    <div className="min-h-screen bg-dark-bg relative">
-      {/* Atmospheric background */}
-      <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-altrion-500/10 rounded-full blur-[120px] animate-pulse" style={{ animationDuration: '8s' }} />
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-accent-cyan/5 rounded-full blur-[120px] animate-pulse" style={{ animationDuration: '10s' }} />
-      </div>
-
-      <Header />
-
-      <main className="max-w-4xl mx-auto px-5 pt-16 pb-16">
+    <DashboardLayout maxWidth="max-w-4xl" padding="px-5 pt-16 pb-16">
         <motion.div
           variants={CONTAINER_VARIANTS}
           initial="hidden"
@@ -102,12 +81,9 @@ export function LoanConfirmation() {
             >
               <CheckCircle size={48} className="text-altrion-400" />
             </motion.div>
-            <h1 className="font-display text-3xl font-bold text-text-primary mb-2">
+            <h1 className="font-display text-3xl font-bold text-text-primary">
               Application Submitted Successfully!
             </h1>
-            <p className="text-text-secondary">
-              Your loan application has been received and is being processed.
-            </p>
           </motion.div>
 
           {/* Application ID Card */}
@@ -149,10 +125,7 @@ export function LoanConfirmation() {
                 <div className="w-10 h-10 rounded-xl bg-altrion-500/20 flex items-center justify-center">
                   <Wallet size={20} className="text-altrion-400" />
                 </div>
-                <div>
-                  <h3 className="font-display text-xl font-semibold text-text-primary">Loan Summary</h3>
-                  <p className="text-sm text-text-secondary">Your approved loan details</p>
-                </div>
+                <h3 className="font-display text-xl font-semibold text-text-primary">Loan Summary</h3>
               </div>
 
               {/* Main Stats */}
@@ -450,10 +423,7 @@ export function LoanConfirmation() {
                 <div className="w-10 h-10 rounded-xl bg-accent-cyan/20 flex items-center justify-center">
                   <Clock size={20} className="text-accent-cyan" />
                 </div>
-                <div>
-                  <h3 className="font-display text-xl font-semibold text-text-primary">What's Next?</h3>
-                  <p className="text-sm text-text-secondary">Expected timeline for your application</p>
-                </div>
+                <h3 className="font-display text-xl font-semibold text-text-primary">What's Next?</h3>
               </div>
 
               <div className="space-y-4">
@@ -529,7 +499,6 @@ export function LoanConfirmation() {
             </p>
           </motion.div>
         </motion.div>
-      </main>
-    </div>
+    </DashboardLayout>
   );
 }

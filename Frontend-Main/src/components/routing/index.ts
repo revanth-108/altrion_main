@@ -1,2 +1,2 @@
-export { ProtectedRoute, PublicOnlyRoute } from './ProtectedRoute';
+export { ProtectedRoute, PublicOnlyRoute, UserOnlyRoute } from './ProtectedRoute';
 export { LazyRoute, PageSkeleton } from './LazyRoute';

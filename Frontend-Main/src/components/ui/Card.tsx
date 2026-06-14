@@ -24,8 +24,8 @@ export function Card({
   const paddings = {
     none: '',
     sm: 'p-4',
-    md: 'p-6',
-    lg: 'p-8',
+    md: 'p-4 sm:p-6',
+    lg: 'p-5 sm:p-8',
   };
 
   return (
@@ -34,8 +34,8 @@ export function Card({
       className={`
         ${variants[variant]}
         ${paddings[padding]}
-        rounded-2xl
-        transition-shadow duration-200
+        card-shell rounded-lg overflow-hidden
+        transition-[box-shadow,transform,border-color] duration-200
         ${hover ? 'cursor-pointer hover:shadow-lg hover:shadow-altrion-500/10' : ''}
         ${className}
       `}

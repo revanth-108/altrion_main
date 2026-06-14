@@ -55,6 +55,10 @@ async def test_exchange_token_returns_403_when_storage_consent_missing(monkeypat
 
     monkeypatch.setattr("app.controllers.plaid.PlaidAdapter", _FakePlaidAdapter)
     monkeypatch.setattr("app.controllers.plaid.should_persist_user_data", lambda _user: False)
+    monkeypatch.setattr(
+        "app.controllers.plaid.plaid_persist.upsert_plaid_provider_token",
+        AsyncMock(return_value=uuid4()),
+    )
     monkeypatch.setattr("app.controllers.plaid.plaid_persist.upsert_item_status", AsyncMock(return_value=True))
 
     with pytest.raises(HTTPException) as exc_info:
